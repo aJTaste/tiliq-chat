@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+/*
+ * デザイントークン
+ * ------------------------------------------------------------------
+ * ブランドコンセプト：アオジタトカゲ（学名 Tiliqua）
+ * 地味な帯模様の体に、驚いたときだけ覗く鮮やかな青い舌。
+ * → ベースは落ち着いた石・帯模様のニュートラル、
+ *   アクセントの "tongue" ブルーだけを意図的に希少に使う。
+ * ライト/ダークは prefers-color-scheme に自動追従（手動切替は将来対応）。
+ */
+:root {
+  --surface: #eae7dd;
+  --surface-raised: #f5f3ec;
+  --ink: #201d19;
+  --ink-muted: #5c564c;
+  --band: #c7bca3;
+  --clay: #8b4331;
+  --tongue: #2451c4;
+  --tongue-strong: #16307f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1b1916;
+    --surface-raised: #252220;
+    --ink: #ede8de;
+    --ink-muted: #aba294;
+    --band: #4a443b;
+    --clay: #c97a54;
+    --tongue: #6e93f0;
+    --tongue-strong: #93b0f5;
+  }
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-band: var(--band);
+  --color-clay: var(--clay);
+  --color-tongue: var(--tongue);
+  --color-tongue-strong: var(--tongue-strong);
+
+  --font-display: var(--font-space-grotesk);
+  --font-body: var(--font-inter);
+  --font-label: var(--font-plex-mono);
+}
+
+body {
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-body);
+}
+
+/* キーボード操作時のフォーカスリング（アクセシビリティ要件） */
+:focus-visible {
+  outline: 2px solid var(--tongue);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
