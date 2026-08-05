@@ -1,4 +1,5 @@
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/types/supabase";
 
 /**
  * service_roleキーを使う特権クライアント。RLSを完全にバイパスする。
@@ -9,7 +10,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
  * 絶対にクライアントサイドに露出させないこと（Server Actionからのみ使用）。
  */
 export function createAdminClient() {
-  return createSupabaseClient(
+  return createSupabaseClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     {

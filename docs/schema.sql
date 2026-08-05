@@ -406,3 +406,69 @@ grant execute on function public.is_room_member(uuid) to authenticated;
 grant execute on function public.is_room_owner(uuid) to authenticated;
 grant execute on function public.is_blocked(uuid, uuid) to authenticated;
 revoke execute on function public.handle_new_user() from authenticated;
+
+-- =============================================================================
+-- Phase 3: DM開始用RPC関数
+-- rooms + room_members への複数INSERTをアトミックに行い、
+-- 既存DMがあればそれを返す（重複DMルーム防止）。
+-- is_room_member/is_room_owner等と同じSECURITY DEFINERパターンを踏襲。
+-- =============================================================================
+
+create or replace function public.get_or_create_dm_room(p_other_user_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room_id uuid;
+  v_self uuid := auth.uid();
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if v_self = p_other_user_id then
+    raise exception 'cannot create DM room with self';
+  end if;
+
+  -- 相手ユーザーが実在するか確認
+  if not exists (select 1 from public.profiles where id = p_other_user_id) then
+    raise exception 'target user not found';
+  end if;
+
+  -- 相互ブロック関係があればDM開始不可（FR-23と整合。blocksテーブルはPhase 5まで空の想定）
+  if public.is_blocked(v_self, p_other_user_id) then
+    raise exception 'cannot start DM: blocked';
+  end if;
+
+  -- 既存のDM（is_group=false かつ両者がメンバー）を検索
+  select rm1.room_id into v_room_id
+  from public.room_members rm1
+  join public.room_members rm2 on rm1.room_id = rm2.room_id
+  join public.rooms r on r.id = rm1.room_id
+  where rm1.user_id = v_self
+    and rm2.user_id = p_other_user_id
+    and r.is_group = false
+  limit 1;
+
+  if v_room_id is not null then
+    return v_room_id;
+  end if;
+
+  -- 新規DMルーム作成
+  insert into public.rooms (is_group) values (false)
+  returning id into v_room_id;
+
+  insert into public.room_members (room_id, user_id, role)
+  values
+    (v_room_id, v_self, 'owner'),
+    (v_room_id, p_other_user_id, 'member');
+
+  return v_room_id;
+end;
+$$;
+
+-- 直接RPC実行はauthenticatedのみに限定（他のヘルパー関数と同じ方針）
+revoke execute on function public.get_or_create_dm_room(uuid) from public;
+grant execute on function public.get_or_create_dm_room(uuid) to authenticated;
