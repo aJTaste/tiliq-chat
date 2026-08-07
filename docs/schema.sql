@@ -1,5 +1,5 @@
 -- =============================================================================
--- Tiliqua DBスキーマ（Phase 1）
+-- Tiliqua DBスキーマ（Phase 1〜3）
 -- Supabase project: tiliq-chat (ref: xewprddypddcxkwvcytu / ap-northeast-1)
 -- 参照用ファイル。実際の適用は Supabase の migration 履歴（apply_migration）で管理。
 -- SRS: docs/srs.md 3.5（データモデル）を、profiles / user_settings に分割して実装。
@@ -472,3 +472,16 @@ $$;
 -- 直接RPC実行はauthenticatedのみに限定（他のヘルパー関数と同じ方針）
 revoke execute on function public.get_or_create_dm_room(uuid) from public;
 grant execute on function public.get_or_create_dm_room(uuid) to authenticated;
+
+-- =============================================================================
+-- Phase 3: Realtime設定
+-- postgres_changes購読（ChatRoom.tsxでのメッセージ受信）が機能するには、
+-- 対象テーブルを supabase_realtime パブリケーションに追加する必要がある。
+-- ダッシュボードの「Database → Publications」からトグルでも設定可能。
+-- 注意：Supabaseダッシュボードの「Database → Replication」ページは
+-- 物理レプリカ/分析パイプライン用に変わっており、Realtimeの設定場所ではない。
+-- また "supabase_realtime_messages_publication" という別のパブリケーションが
+-- 自動生成されているが、これはSupabase内部のrealtime.messages用であり無関係。
+-- =============================================================================
+
+alter publication supabase_realtime add table public.messages;
