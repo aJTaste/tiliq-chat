@@ -1,4 +1,5 @@
 import type { Tables } from "@/types/supabase";
+import { buildChatImageUrl } from "@/lib/cloudinary/url";
 
 type MessageRow = Tables<"messages">;
 
@@ -27,11 +28,15 @@ export function MessageBubble({
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
         )}
         {message.image_url && (
+          // next/image（Vercelの画像最適化API）は使わず、Cloudinary側のf_auto,q_auto変換URLを
+          // そのまま<img>で配信する（詳細はlib/cloudinary/url.tsのコメント参照）
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={message.image_url}
+            src={buildChatImageUrl(message.image_url)}
             alt=""
-            className="mt-1 max-h-64 rounded-lg"
+            loading="lazy"
+            decoding="async"
+            className="mt-1 max-h-64 w-auto max-w-full rounded-lg"
           />
         )}
         <p

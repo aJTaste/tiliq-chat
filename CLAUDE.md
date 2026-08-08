@@ -43,6 +43,11 @@
 NEXT_PUBLIC_SUPABASE_URL=https://xewprddypddcxkwvcytu.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_VIxVf8bWwth8Afc_ojKkug_FJdQknnz
 SUPABASE_SERVICE_ROLE_KEY=（Supabaseダッシュボード → Project Settings → API Keysから手動取得。MCP経由では取得不可）
+
+# Phase 4で追加。Cloudinaryダッシュボード（Settings → API Keys）から取得
+NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME=
+CLOUDINARY_API_KEY=
+CLOUDINARY_API_SECRET=
 ```
 
 ### Supabaseダッシュボードの注意点（新UI・2026年時点）
@@ -56,6 +61,7 @@ SUPABASE_SERVICE_ROLE_KEY=（Supabaseダッシュボード → Project Settings 
 
 - **`middleware.ts` は廃止され `proxy.ts` になった。** エクスポート名は`proxy`（named export。default exportも可）。Phase 2で実装済み。実際にnpmパッケージ（next@16.2.12）のドキュメントを取得して仕様確認済み：`request.cookies` / `response.cookies` APIは旧middlewareと同一、デフォルトでNode.jsランタイム（Edgeランタイム限定ではない）
 - **動的ルートの`params`はPromiseになった。** `app/chat/[roomId]/page.tsx` のようなServer Componentでは `params: Promise<{ roomId: string }>` として受け取り、`await params` で取り出す（Next 15で導入され、Next 16では同期アクセスがサポート外に）。`cookies()` が非同期なのと同じ設計思想
+- **Route Handler（`app/api/.../route.ts`）自体のシグネチャは変更なし。** `export async function POST(request: Request)` のまま（Phase 4でnode_modules/next/dist/docs/を実際に確認済み）。動的セグメントを持たないRoute Handlerでは`params`の扱いも関係ない
 - **Cache Components（`cacheComponents: true`）は有効化していない**（デフォルトの動的レンダリングのまま）。理由：チャット・認証まわりはほぼ全てユーザー個別のデータで、静的キャッシュが馴染まないため
 
 ## デザイントークン（`app/globals.css`）
@@ -84,10 +90,10 @@ SUPABASE_SERVICE_ROLE_KEY=（Supabaseダッシュボード → Project Settings 
 | 1     | Supabaseプロジェクト設定・DBスキーマ（9テーブル）・RLS・トリガー           | **完了** |
 | 2     | 認証フロー（サインアップ・ログイン・ログアウト・`proxy.ts`）               | **完了** |
 | 3     | チャットのコア機能（Room・メッセージ送受信・Realtime・ページング）         | **完了** |
-| 4     | 画像送信（Cloudinary連携）                                                 | 次はこれ |
-| 5     | フレンド・ストレンジャー・ブロック機能                                     | 未着手   |
-| 6     | 一時チャット・追加認証（PIN/キー）・非表示メッセージ                       | 未着手   |
-| 7     | 通知設定・PWA仕上げ（Service Worker）・低スペック最適化・デプロイ          | 未着手   |
+| 4     | 画像送信（Cloudinary連携）                                                 | **完了** |
+| 5     | フレンド・ストレンジャー・ブロック                                         | 次はこれ |
+| 6     | 一時チャット・追加認証・非表示メッセージ                                   | 未着手   |
+| 7     | 通知設定・PWA仕上げ・デプロイ                                              | 未着手   |
 
 ## Phase 1 の実装内容・詳細
 
@@ -147,8 +153,8 @@ SRSの `User` モデルは `profiles`（公開情報）と `user_settings`（非
 - `components/chat/NewDmForm.tsx` — DM開始フォーム（`useActionState`）
 - `app/home/page.tsx` — チャット一覧画面に置き換え。自分が参加するDMルームを直近メッセージ順に表示
 - `app/chat/[roomId]/page.tsx` — チャット画面のServer Component。メンバーシップ確認・相手プロフィール取得・直近30件のメッセージ取得
-- `components/chat/ChatRoom.tsx` — チャット画面のClient Component。メッセージ送受信・Realtime購読・ページング・textarea自動リサイズ
-- `components/chat/MessageBubble.tsx` — メッセージ1件分の表示
+- `components/chat/ChatRoom.tsx` — チャット画面のClient Component。メッセージ送受信・Realtime購読・ページング・textarea自動リサイズ（**Phase 4で画像添付機能を追加**）
+- `components/chat/MessageBubble.tsx` — メッセージ1件分の表示（**Phase 4でCloudinary配信URL対応**）
 
 ### DB変更
 
@@ -158,26 +164,77 @@ SRSの `User` モデルは `profiles`（公開情報）と `user_settings`（非
 ### 設計判断・学び
 
 - **型生成はマイグレーション適用の「後」に行う。** 先に型生成してからRPC関数を追加すると、その関数の型（`Args`/`Returns`）が型定義に反映されない
-- **DM作成はDB関数（RPC）にまとめてアトミックにした。** `rooms`→`room_members`(自分)→`room_members`(相手)を JSクライアント側で順にINSERTする方式も可能だが、途中失敗での中途半端なルーム残留や、同時押しでの重複DMルーム生成を避けるため
-- **ホットパスの実践：** メッセージ送信・ページング取得はRoute Handlerを経由せず、Client ComponentからSupabaseクライアントを直接呼び出し（`lib/supabase/client.ts`）。既存原則どおり
+- **DM作成はDB関数（RPC）にまとめてアトミックにした。**
+- **ホットパスの実践：** メッセージ送信・ページング取得はRoute Handlerを経由せず、Client ComponentからSupabaseクライアントを直接呼び出し（`lib/supabase/client.ts`）
 - **Realtimeの購読ライフサイクル：** チャット画面マウント時に`postgres_changes`（`room_id`でフィルタしたINSERT）を購読し、アンマウント時に`removeChannel`で解除（SRS 3.6要件）
 - **重複防止：** 自分の送信は「insert成功時のstate追加」と「Realtime受信」の両方から来る可能性があるため、メッセージ`id`で重複排除している
-- **ページングはカーソルベース（`created_at`）。** 古いメッセージを先頭に追加した直後は`scrollHeight`の差分でスクロール位置を補正し、ジャンプを防いでいる
-- **textareaの自動リサイズ：** `useLayoutEffect`で`height: auto` → `scrollHeight`を測り直すパターン。`max-h-32`で上限を設け、それ以上は内部スクロールに切り替える
-- **コード配布方法の教訓：** ジェネリクスやJSXなど`<`を含む長いTS/TSXコードをチャットのコードブロックとして提示すると、ブラウザからのコピー＆ペースト時に`<`が欠落し構文エラーになった実例があった（`types/supabase.ts`、`app/home/page.tsx`）。以後、こうしたファイルは`create_file`でサンドボックス内に生成し、可能な限り実際に`tsc --noEmit`で検証してからダウンロード形式で渡す運用にした
-- **Supabaseダッシュボードの新UI：** 上記「Supabaseプロジェクト」セクションに記載の注意点を参照
+- **ページングはカーソルベース（`created_at`）。** 古いメッセージを先頭に追加した直後は`scrollHeight`の差分でスクロール位置を補正
+- **コード配布方法の教訓：** ジェネリクスやJSXなど`<`を含む長いTS/TSXコードをチャットのコードブロックとして提示すると、ブラウザからのコピー＆ペースト時に`<`が欠落し構文エラーになった実例があった。以後、こうしたファイルは`create_file`でサンドボックス内に生成し、可能な限り実際に`tsc --noEmit`で検証してからダウンロード形式で渡す運用にした
 
-### 動作確認結果
-
-ユーザーが実機で確認済み：DM開始（新規作成・既存ルームへの再利用・自分自身/存在しないユーザーIDへのエラーハンドリング）、メッセージ送受信、2画面でのRealtime反映、ページング（スクロール位置維持含む）、非メンバーからのアクセスで404、未ログイン時のリダイレクト、すべて正常動作。
-
-### 未対応・持ち越し事項
+### 未対応・持ち越し事項（Phase 3時点）
 
 - ルーム一覧（`app/home/page.tsx`の`fetchRoomList`）のクエリがN+1気味。Phase 5でフレンド機能を実装する際に、ビュー化またはRPC化を検討する
 - メッセージ削除・非表示機能は未実装（DBの`deleted_at`カラム・`message_hidden`テーブルは用意済み。UIはPhase 6予定）
-- 真の楽観的更新（送信直後に仮IDで即座に表示→サーバー確定後に差し替え）は未実装。現状はinsert完了（ネットワーク往復）を待ってからstateに反映している。低スペック端末・低速回線での体感速度に問題が出るようなら見直す
-- グループチャットのUIは未対応。`app/chat/[roomId]/page.tsx`は「DM相手1人」を前提にした実装になっている
-- `message.image_url`の表示は`<img>`タグで暫定対応済みだが、実際のアップロード機能はPhase 4で実装
+- 真の楽観的更新は未実装。現状はinsert完了（ネットワーク往復）を待ってからstateに反映している
+- グループチャットのUIは未対応。`app/chat/[roomId]/page.tsx`は「DM相手1人」を前提
+
+## Phase 4 の実装内容・詳細
+
+SRS FR-7/FR-8、3.5「画像データ」準拠。画像送信・閲覧機能を実装。
+
+### 追加ファイル
+
+- `lib/cloudinary/sign.ts` — Cloudinary署名付きアップロード用のシグネチャ生成（`node:crypto`のSHA1）。サーバー専用
+- `app/api/cloudinary/sign/route.ts` — 署名発行のRoute Handler（POST）。ログイン確認＋対象ルームのメンバーシップ確認（`is_room_member` RPC）を行ってから、`timestamp`/`folder`に対する署名を返す
+- `lib/cloudinary/upload.ts` — クライアント側から署名を取得し、Cloudinaryへ直接（Route Handlerを経由せず）アップロードする関数
+- `lib/cloudinary/url.ts` — 表示用に`f_auto,q_auto,w_{width}`変換をCloudinaryのURLへ差し込むヘルパー
+- `lib/images/compress.ts` — 送信前のバリデーション（形式・5MB上限）とcanvasベースのリサイズ・再圧縮
+- `components/chat/ChatRoom.tsx` — 画像添付ボタン・プレビュー・アップロード状態表示・送信フローを追加（既存の完全なファイルを更新）
+- `components/chat/MessageBubble.tsx` — 画像表示を`buildChatImageUrl`経由のCloudinary最適化URLに変更（既存の完全なファイルを更新）
+
+### 設計判断・学び
+
+- **アップロードはブラウザ→Cloudinaryへ直接（署名付き）。** Route Handlerは`CLOUDINARY_API_SECRET`を使う署名生成のみを担当し、画像本体はRoute Handlerを経由させない。理由：Vercelのサーバーレス関数にバイナリを中継させるとリクエストボディ上限・実行時間の制約に引っかかりやすく、無料プラン運用（SRS 2.5）と相性が悪いため。「Route Handlerは認証・特権操作専用」という既存原則にも合致する
+- **署名対象パラメータは`folder`と`timestamp`のみ。** Cloudinaryの署名アルゴリズム（キー昇順ソート→`key=value`を`&`連結→`api_secret`を末尾に連結→SHA1）に準拠。`api_key`・ファイル本体は署名対象に含めない
+- **フォルダは`tiliqua/rooms/{roomId}`単位。** 将来のFuture Extensions「Cloudinary画像の孤立ファイル削除バッチ」で、ルーム削除時にフォルダごと削除しやすくするため
+- **署名発行時にルームメンバーシップを確認する多層防御。** 実際のメッセージINSERT自体はDB側RLS（`messages_insert_member_not_blocked`）で保護されているが、フォルダパスの正当性のためRoute Handler側でも`is_room_member` RPCを呼んでいる
+- **next/image（Vercelの画像最適化API）は採用しなかった。** CloudinaryのURLに`f_auto,q_auto`を付与するだけで形式・画質の最適化ができるため、next/imageを併用すると同じ画像を二重に変換することになり、Vercel無料プランの画像最適化回数（月間上限あり）を無駄に消費してしまう。そのため配信は素の`<img>`のままとし、`lib/cloudinary/url.ts`でURLベースの変換だけを行う方針にした
+- **GIFはcanvas再圧縮をスキップ。** canvas経由で再エンコードするとアニメーションが失われ1コマの静止画になってしまうため、GIFのみバリデーション（5MB上限・形式）だけ通して元ファイルをそのままアップロードする
+- **アップロード進捗は%表示ではなく状態文言のみ（「画像を処理中...」「アップロード中...」）。** `fetch`ベースでシンプルに実装し、進捗%が必要になった場合はXHR（`upload.onprogress`）への切り替えを検討する
+- **画像アップロード失敗時は自動リトライせず、選択中のファイル・本文をどちらも保持したまま手動再送信できるようにした。** SRS 3.4「画像アップロード失敗時は失敗メッセージを表示し、再送信を促す」に対応。テキストのみの送信失敗時の自動リトライ（最大3回）はSRS 3.4に別途記載があるが、Phase 4のスコープ外として未実装のまま（持ち越し事項に記載）
+- **Route Handlerのシグネチャ自体はNext.js 16でも不変であることを実物のドキュメント（`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/route.md`）で確認済み。** `app/api/cloudinary/sign/route.ts`に動的セグメントは無いため、`params`のPromise化も関係ない
+
+### 動作確認してほしい項目（実機確認用チェックリスト）
+
+1. `.env.local`にCloudinaryの3値（`NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET`）を設定してから`npm run dev`
+2. チャット画面で画像添付ボタン（📎アイコン）→ ファイル選択 → プレビュー表示 → 送信、の一連の流れ
+3. テキスト＋画像を同時送信できること／画像のみ送信できること
+4. 5MB超のファイル・非対応形式（例：HEIC）を選んだ際にエラーメッセージが表示され、送信されないこと
+5. JPEG/PNG/WebPが違和感のない画質でリサイズ・表示されること、GIFのアニメーションが送信後も再生されること
+6. 画像アップロード中にアプリを閉じたり、意図的にネットワークを切って失敗させた場合、「画像のアップロードに失敗しました」等のエラーが出て、選択した画像が消えずに再送信できること
+7. Cloudinaryダッシュボードの Media Library に `tiliqua/rooms/{roomId}` フォルダで画像が保存されていること
+8. 2画面でRealtime反映（片方で画像送信→もう片方に届く）が引き続き問題ないこと
+
+### 実機テストで見つかったバグと修正（Phase 4完了後）
+
+1. **GIFが送受信できない（表示が空に見える）**
+   原因：`lib/cloudinary/url.ts`の表示用変換で、全画像に`f_auto,q_auto,w_{width}`を一律適用していた。Cloudinaryはアニメーション画像に変換をかける際、`fl_animated`フラグを付けない限り**デフォルトで先頭フレームのみ**を配信する仕様があり、多くのGIFは先頭フレームが空白/透明であることが多いため「何も表示されない」ように見えていた（Cloudinary側には正しく保存されていたのはこのため）。
+   修正：URLが`.gif`で終わる場合のみ`f_auto,fl_animated,q_auto,w_{width}`を適用するよう`buildChatImageUrl`を変更。`f_auto`と`fl_animated`の併用で、対応ブラウザにはアニメーションWebPとして（非対応ならGIFのまま）アニメーションを保ったまま配信される。
+
+2. **新着メッセージ受信時、画面が最新の状態までスクロールされない（少し上で止まる）**
+   原因：`setMessages(...)`の直後に同期で`bottomRef.current?.scrollIntoView()`を呼んでいたが、Reactの状態更新はDOMへの反映が次のコミットまで非同期のため、その時点ではまだ新しいメッセージがDOMに挿入されていない。結果として「新メッセージ追加前の一番下」を基準にスクロールしてしまい、実際に新メッセージが挿入された後は少し上で止まって見えていた（テキスト・画像どちらでも発生。画像特有の問題ではなかった）。
+   修正：`pendingScrollToBottomRef`（bool）を新設し、Realtime受信時・自分の送信成功時にはこのrefをtrueにするだけにした。実際のスクロールは`messages`の更新を検知する`useLayoutEffect`側（＝DOMへのコミット後）で行うことで、常に正しい最下部へ届くようにした。既存の「過去メッセージ読み込み時のスクロール位置維持」（`pendingScrollAdjustRef`）と同じ設計パターンに揃えた形。
+
+3. **過去メッセージを読んでいる最中でも、新着メッセージが来ると強制的に最下部へスクロールされてしまう**
+   要望：スクロール位置がすでに最下部付近にある場合だけ自動スクロールし、意図的に上へスクロールして過去ログを読んでいる場合は割り込まないでほしい。
+   対応：`isScrolledNearBottom()`（`scrollHeight - scrollTop - clientHeight <= 120px`で判定）を追加し、**Realtime受信時のみ**、新メッセージがDOMに追加される前の時点でこの判定を行い、最下部付近にいた場合だけ`pendingScrollToBottomRef`を立てるようにした。一方、**自分がメッセージを送信したときは、閲覧中のスクロール位置に関わらず常に最下部へ移動する**（自分の送信内容は必ず見せたいため、他の一般的なチャットアプリと同じ挙動）。この非対称な扱いは意図的な設計。
+
+### 未対応・持ち越し事項（Phase 4時点）
+
+- サインアップ画面（`app/signup/page.tsx`）のアバターアップロードは今回は対応せず。必要になったタイミングで`lib/cloudinary`の署名フローを流用して追加する
+- アップロード進捗の%表示（現状は状態文言のみ）
+- テキスト送信失敗時の自動リトライ（SRS 3.4、最大3回）は未実装
+- 画像のみのメッセージに対する`MessageHidden`（非表示）・削除機能はPhase 6で対応予定（Phase 3からの持ち越しと同じ）
 
 ## 開発上の重要な原則
 
@@ -185,8 +242,8 @@ SRSの `User` モデルは `profiles`（公開情報）と `user_settings`（非
 - **MXバイパス：** `signUp()`は使わず`adminClient.auth.admin.createUser()` + `email_confirm: true`を使う
 - **service_roleの権限：** SQL Editor / migration API で作成したテーブルは`service_role`への権限が自動付与されないため、`GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role`を忘れずに実行する
 - **トリガーの`search_path`：** authスキーマ配下から実行されるトリガー関数は`SET search_path = public`が必須
-- **パフォーマンス：** メッセージ送受信などホットパスは、Route Handlerを経由せずSupabaseクライアントを直接呼び出す。Route Handlerは認証・特権操作専用に限定する
-- **Realtime対象テーブルの登録を忘れない：** 新しくRealtime購読が必要なテーブルを追加したら、`supabase_realtime`パブリケーションへの追加を忘れずに行う（Supabaseダッシュボードの注意点セクション参照）
+- **パフォーマンス：** メッセージ送受信などホットパスは、Route Handlerを経由せずSupabaseクライアントを直接呼び出す。Route Handlerは認証・特権操作専用に限定する（Cloudinaryの署名発行も同じ原則。ただしファイル本体はRoute Handlerを経由させず、ブラウザから直接Cloudinaryへ送る）
+- **Realtime対象テーブルの登録を忘れない：** 新しくRealtime購読が必要なテーブルを追加したら、`supabase_realtime`パブリケーションへの追加を忘れずに行う
 - **コード提供方針：** 部分的なスニペットではなく、そのまま置き換え可能な完全なファイルを提供する。ジェネリクス・JSXなど`<`を含む長いコードはチャットのコードブロックではなくファイルとして渡す
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
@@ -200,23 +257,32 @@ tiliq-chat/
 │   ├── page.tsx                 # アプリ紹介ページ（SRS 3.2.1）
 │   ├── globals.css              # デザイントークン・Tailwind v4設定
 │   ├── favicon.ico
+│   ├── api/
+│   │   └── cloudinary/
+│   │       └── sign/route.ts    # Cloudinary署名発行（Phase 4）
 │   ├── login/page.tsx           # ログイン画面（Phase 2）
 │   ├── signup/page.tsx          # サインアップ画面（Phase 2）
-│   ├── home/page.tsx            # チャット一覧画面（Phase 3で置き換え）
+│   ├── home/page.tsx            # チャット一覧画面（Phase 3）
 │   ├── chat/[roomId]/page.tsx   # チャット画面（Phase 3）
 │   └── actions/
 │       ├── auth.ts              # signup/login/logout Server Actions（Phase 2）
 │       └── rooms.ts             # startDirectMessage Server Action（Phase 3）
 ├── lib/
-│   └── supabase/
-│       ├── client.ts            # ブラウザ用クライアント（Phase 3でDatabase型適用）
-│       ├── server.ts            # Server Component/Action用クライアント（Phase 3でDatabase型適用）
-│       └── admin.ts             # service_role用クライアント（Phase 3でDatabase型適用）
+│   ├── supabase/
+│   │   ├── client.ts            # ブラウザ用クライアント
+│   │   ├── server.ts            # Server Component/Action用クライアント
+│   │   └── admin.ts             # service_role用クライアント
+│   ├── cloudinary/              # Phase 4
+│   │   ├── sign.ts              # 署名生成（サーバー専用）
+│   │   ├── upload.ts            # クライアント→Cloudinary直接アップロード
+│   │   └── url.ts               # 表示用URL変換ヘルパー
+│   └── images/
+│       └── compress.ts          # 送信前バリデーション・リサイズ（Phase 4）
 ├── components/
 │   ├── TiliquaMark.tsx          # ブランドロゴ
 │   └── chat/
-│       ├── ChatRoom.tsx         # チャット画面本体・Realtime購読（Phase 3）
-│       ├── MessageBubble.tsx    # メッセージ表示（Phase 3）
+│       ├── ChatRoom.tsx         # チャット画面本体・Realtime購読・画像添付（Phase 3/4）
+│       ├── MessageBubble.tsx    # メッセージ表示（Phase 3/4）
 │       └── NewDmForm.tsx        # DM開始フォーム（Phase 3）
 ├── types/
 │   └── supabase.ts              # Supabase生成型定義（Phase 3）
@@ -231,13 +297,13 @@ tiliq-chat/
 └── CLAUDE.md（このファイル）
 ```
 
-## 次にやること（Phase 4）
+## 次にやること（Phase 5）
 
-画像送信（Cloudinary連携）。SRS FR-7/FR-8、3.5「画像データ」を参照。
+フレンド・ストレンジャー・ブロック機能。SRS FR-11〜FR-13、FR-15、FR-22、FR-23、3.5「検索対象の定義」を参照。
 
-1. `.env.local`にCloudinaryの認証情報を設定（`.env.example`に項目は用意済み：`NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET`）
-2. 署名付きアップロードの実装。アップロードは特権操作寄り（APIシークレットを使う）なので、Route Handler経由にする（既存原則の「Route Handlerは認証・特権操作専用」に合致）
-3. クライアント側での画像圧縮・リサイズ（アップロード前。SRS 2.5「軽量・高速設計」の方針に沿う）。上限5MB・対応フォーマットJPEG/PNG/WebP/GIFのバリデーション
-4. `components/chat/ChatRoom.tsx`の送信フォームに画像添付UIを追加。アップロード中の状態表示、失敗時のリトライ（SRS 3.4のエラーハンドリング要件）
-5. `MessageBubble.tsx`の画像表示を、`next.config.ts`で許可済みの`res.cloudinary.com`を使い`next/image`に切り替え検討（現状は暫定で`<img>`タグ）
-6. アカウント作成フォーム（`app/signup/page.tsx`）から外してあるアバターアップロードも、この段階で対応するか検討（Phase 2の持ち越し事項）
+1. `friendships`（申請・承認・拒否・既読バッジ）と`blocks`テーブルはPhase 1で作成済み。RLSも設定済みなので、UIとServer Action/クエリの実装が中心になる
+2. `app/home/page.tsx`のチャット一覧を「フレンド／ストレンジャー／グループ／検索」の4タブ構成に拡張（SRS 3.2.1）
+3. 現状DM相手は無条件に表示されているが、フレンド関係の有無に応じて「フレンド一覧」「ストレンジャー一覧」に振り分ける
+4. `fetchRoomList`（Phase 3からのN+1の持ち越し）をこのタイミングでビュー化・RPC化するか判断する
+5. ユーザー追加UI（ユーザーIDでフレンド申請 or DM開始）は`components/chat/NewDmForm.tsx`をベースに拡張、または新規コンポーネント化
+6. ブロック機能実装時は、既存の`is_blocked()`ヘルパー関数・`get_or_create_dm_room`のブロックチェックが既に組み込み済みであることを確認しながら進める
