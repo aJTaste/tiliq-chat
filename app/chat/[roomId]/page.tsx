@@ -20,8 +20,6 @@ export default async function ChatRoomPage({
     redirect("/login");
   }
 
-  // RLS上、room_membersに自分の行が無ければそもそも取得できない
-  // （is_room_member経由のポリシーで非メンバーには見えない）
   const { data: room } = await supabase
     .from("rooms")
     .select("id, is_group")
@@ -32,7 +30,6 @@ export default async function ChatRoomPage({
     notFound();
   }
 
-  // DM相手のプロフィールを取得（グループチャットのUIはPhase 3では未対応）
   const { data: otherMember } = await supabase
     .from("room_members")
     .select("user_id")
@@ -54,7 +51,15 @@ export default async function ChatRoomPage({
     notFound();
   }
 
-  // 直近PAGE_SIZE件を新しい順に取得し、表示用に古い順へ並び替える
+  // blocks_select_ownのRLSにより、自分がブロックした相手かどうかのみ判定できる
+  // （相手が自分をブロックしているかは見えない設計。schema.sql参照）
+  const { data: myBlockOfOther } = await supabase
+    .from("blocks")
+    .select("id")
+    .eq("blocker_id", user.id)
+    .eq("blocked_id", otherProfile.id)
+    .maybeSingle();
+
   const { data: initialMessagesDesc } = await supabase
     .from("messages")
     .select("*")
@@ -78,6 +83,7 @@ export default async function ChatRoomPage({
       }}
       initialMessages={initialMessages}
       initialHasMore={initialHasMore}
+      initialIsBlockedByMe={!!myBlockOfOther}
     />
   );
 }

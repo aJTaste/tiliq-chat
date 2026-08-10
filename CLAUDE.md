@@ -91,8 +91,8 @@ CLOUDINARY_API_SECRET=
 | 2     | 認証フロー（サインアップ・ログイン・ログアウト・`proxy.ts`）               | **完了** |
 | 3     | チャットのコア機能（Room・メッセージ送受信・Realtime・ページング）         | **完了** |
 | 4     | 画像送信（Cloudinary連携）                                                 | **完了** |
-| 5     | フレンド・ストレンジャー・ブロック                                         | 次はこれ |
-| 6     | 一時チャット・追加認証・非表示メッセージ                                   | 未着手   |
+| 5     | フレンド・ストレンジャー・ブロック                                         | **完了** |
+| 6     | 一時チャット・追加認証・非表示メッセージ                                   | 次はこれ |
 | 7     | 通知設定・PWA仕上げ・デプロイ                                              | 未着手   |
 
 ## Phase 1 の実装内容・詳細
@@ -133,7 +133,7 @@ SRSの `User` モデルは `profiles`（公開情報）と `user_settings`（非
 - `proxy.ts` — セッションリフレッシュ＋ルート保護（未ログイン時は保護ルートで`/login`へ、ログイン済みで`/login`・`/signup`にアクセスすると`/home`へ）
 - `app/actions/auth.ts` — `signup` / `login` / `logout` のServer Actions
 - `app/login/page.tsx` / `app/signup/page.tsx` — フォーム画面（`useActionState`使用）
-- `app/home/page.tsx` — 認証確認用の仮画面（**Phase 3で実際のチャット一覧画面に置き換え済み**）
+- `app/home/page.tsx` — 認証確認用の仮画面（**Phase 3で実際のチャット一覧画面に置き換え済み。Phase 5でさらにタブ構成へ拡張**）
 
 ### 設計判断・学び
 
@@ -150,15 +150,15 @@ SRSの `User` モデルは `profiles`（公開情報）と `user_settings`（非
 - `types/supabase.ts` — Supabase MCPの`generate_typescript_types`で生成した型定義。テーブル・RPC関数の型を含む
 - `lib/supabase/client.ts` / `server.ts` / `admin.ts` — `Database`ジェネリクスを適用（型チェック・補完が効くように）
 - `app/actions/rooms.ts` — DM開始のServer Action（`startDirectMessage`）。ユーザーID検索 → `get_or_create_dm_room` RPC呼び出し → `/chat/[roomId]`へリダイレクト
-- `components/chat/NewDmForm.tsx` — DM開始フォーム（`useActionState`）
+- `components/chat/NewDmForm.tsx` — DM開始フォーム（`useActionState`）**※Phase 5で`AddUserPanel`に統合され削除**
 - `app/home/page.tsx` — チャット一覧画面に置き換え。自分が参加するDMルームを直近メッセージ順に表示
 - `app/chat/[roomId]/page.tsx` — チャット画面のServer Component。メンバーシップ確認・相手プロフィール取得・直近30件のメッセージ取得
-- `components/chat/ChatRoom.tsx` — チャット画面のClient Component。メッセージ送受信・Realtime購読・ページング・textarea自動リサイズ（**Phase 4で画像添付機能を追加**）
+- `components/chat/ChatRoom.tsx` — チャット画面のClient Component。メッセージ送受信・Realtime購読・ページング・textarea自動リサイズ（**Phase 4で画像添付機能、Phase 5でブロックUIを追加**）
 - `components/chat/MessageBubble.tsx` — メッセージ1件分の表示（**Phase 4でCloudinary配信URL対応**）
 
 ### DB変更
 
-- RPC関数 `get_or_create_dm_room(p_other_user_id uuid) returns uuid` を追加（`docs/schema.sql`に追記済み）。`rooms` + `room_members`への複数INSERTをアトミックに行い、既存DMがあればそれを返す（重複ルーム防止）。他のヘルパー関数と同じくSECURITY DEFINER + `authenticated`のみEXECUTE許可のパターン
+- RPC関数 `get_or_create_dm_room(p_other_user_id uuid) returns uuid` を追加（`docs/schema.sql`に追記済み）。`rooms` + `room_members`への複数INSERTをアトミックに行い、既存DMがあればそれを返す（重複ルーム防止）。他のヘルパー関数と同じくSECURITY DEFINER + `authenticated`のみEXECUTE許可のパターン（**Phase 5でFR-22のストレンジャーDMチェックを追加**）
 - `messages`テーブルを`supabase_realtime`パブリケーションに追加（`alter publication supabase_realtime add table public.messages;`）。**これを忘れるとRealtimeが届かない**（DBへの保存自体は成功するため気づきにくい不具合になる）
 
 ### 設計判断・学び
@@ -173,7 +173,7 @@ SRSの `User` モデルは `profiles`（公開情報）と `user_settings`（非
 
 ### 未対応・持ち越し事項（Phase 3時点）
 
-- ルーム一覧（`app/home/page.tsx`の`fetchRoomList`）のクエリがN+1気味。Phase 5でフレンド機能を実装する際に、ビュー化またはRPC化を検討する
+- ルーム一覧（`app/home/page.tsx`の`fetchRoomList`）のクエリがN+1気味。**→ Phase 5で`get_conversation_list` RPCへ置き換えて解消済み**
 - メッセージ削除・非表示機能は未実装（DBの`deleted_at`カラム・`message_hidden`テーブルは用意済み。UIはPhase 6予定）
 - 真の楽観的更新は未実装。現状はinsert完了（ネットワーク往復）を待ってからstateに反映している
 - グループチャットのUIは未対応。`app/chat/[roomId]/page.tsx`は「DM相手1人」を前提
@@ -204,47 +204,116 @@ SRS FR-7/FR-8、3.5「画像データ」準拠。画像送信・閲覧機能を�
 - **画像アップロード失敗時は自動リトライせず、選択中のファイル・本文をどちらも保持したまま手動再送信できるようにした。** SRS 3.4「画像アップロード失敗時は失敗メッセージを表示し、再送信を促す」に対応。テキストのみの送信失敗時の自動リトライ（最大3回）はSRS 3.4に別途記載があるが、Phase 4のスコープ外として未実装のまま（持ち越し事項に記載）
 - **Route Handlerのシグネチャ自体はNext.js 16でも不変であることを実物のドキュメント（`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/route.md`）で確認済み。** `app/api/cloudinary/sign/route.ts`に動的セグメントは無いため、`params`のPromise化も関係ない
 
-### 動作確認してほしい項目（実機確認用チェックリスト）
-
-1. `.env.local`にCloudinaryの3値（`NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET`）を設定してから`npm run dev`
-2. チャット画面で画像添付ボタン（📎アイコン）→ ファイル選択 → プレビュー表示 → 送信、の一連の流れ
-3. テキスト＋画像を同時送信できること／画像のみ送信できること
-4. 5MB超のファイル・非対応形式（例：HEIC）を選んだ際にエラーメッセージが表示され、送信されないこと
-5. JPEG/PNG/WebPが違和感のない画質でリサイズ・表示されること、GIFのアニメーションが送信後も再生されること
-6. 画像アップロード中にアプリを閉じたり、意図的にネットワークを切って失敗させた場合、「画像のアップロードに失敗しました」等のエラーが出て、選択した画像が消えずに再送信できること
-7. Cloudinaryダッシュボードの Media Library に `tiliqua/rooms/{roomId}` フォルダで画像が保存されていること
-8. 2画面でRealtime反映（片方で画像送信→もう片方に届く）が引き続き問題ないこと
-
 ### 実機テストで見つかったバグと修正（Phase 4完了後）
 
 1. **GIFが送受信できない（表示が空に見える）**
-   原因：`lib/cloudinary/url.ts`の表示用変換で、全画像に`f_auto,q_auto,w_{width}`を一律適用していた。Cloudinaryはアニメーション画像に変換をかける際、`fl_animated`フラグを付けない限り**デフォルトで先頭フレームのみ**を配信する仕様があり、多くのGIFは先頭フレームが空白/透明であることが多いため「何も表示されない」ように見えていた（Cloudinary側には正しく保存されていたのはこのため）。
-   修正：URLが`.gif`で終わる場合のみ`f_auto,fl_animated,q_auto,w_{width}`を適用するよう`buildChatImageUrl`を変更。`f_auto`と`fl_animated`の併用で、対応ブラウザにはアニメーションWebPとして（非対応ならGIFのまま）アニメーションを保ったまま配信される。
+   原因：`lib/cloudinary/url.ts`の表示用変換で、全画像に`f_auto,q_auto,w_{width}`を一律適用していた。Cloudinaryはアニメーション画像に変換をかける際、`fl_animated`フラグを付けない限り**デフォルトで先頭フレームのみ**を配信する仕様があり、多くのGIFは先頭フレームが空白/透明であることが多いため「何も表示されない」ように見えていた。
+   修正：URLが`.gif`で終わる場合のみ`f_auto,fl_animated,q_auto,w_{width}`を適用するよう`buildChatImageUrl`を変更。
 
 2. **新着メッセージ受信時、画面が最新の状態までスクロールされない（少し上で止まる）**
-   原因：`setMessages(...)`の直後に同期で`bottomRef.current?.scrollIntoView()`を呼んでいたが、Reactの状態更新はDOMへの反映が次のコミットまで非同期のため、その時点ではまだ新しいメッセージがDOMに挿入されていない。結果として「新メッセージ追加前の一番下」を基準にスクロールしてしまい、実際に新メッセージが挿入された後は少し上で止まって見えていた（テキスト・画像どちらでも発生。画像特有の問題ではなかった）。
-   修正：`pendingScrollToBottomRef`（bool）を新設し、Realtime受信時・自分の送信成功時にはこのrefをtrueにするだけにした。実際のスクロールは`messages`の更新を検知する`useLayoutEffect`側（＝DOMへのコミット後）で行うことで、常に正しい最下部へ届くようにした。既存の「過去メッセージ読み込み時のスクロール位置維持」（`pendingScrollAdjustRef`）と同じ設計パターンに揃えた形。
+   原因：`setMessages(...)`の直後に同期で`bottomRef.current?.scrollIntoView()`を呼んでいたが、Reactの状態更新はDOMへの反映が次のコミットまで非同期のため、その時点ではまだ新しいメッセージがDOMに挿入されていなかった。
+   修正：`pendingScrollToBottomRef`（bool）を新設し、実際のスクロールは`messages`の更新を検知する`useLayoutEffect`側（＝DOMへのコミット後）で行うことで、常に正しい最下部へ届くようにした。
 
 3. **過去メッセージを読んでいる最中でも、新着メッセージが来ると強制的に最下部へスクロールされてしまう**
-   要望：スクロール位置がすでに最下部付近にある場合だけ自動スクロールし、意図的に上へスクロールして過去ログを読んでいる場合は割り込まないでほしい。
-   対応：`isScrolledNearBottom()`（`scrollHeight - scrollTop - clientHeight <= 120px`で判定）を追加し、**Realtime受信時のみ**、新メッセージがDOMに追加される前の時点でこの判定を行い、最下部付近にいた場合だけ`pendingScrollToBottomRef`を立てるようにした。一方、**自分がメッセージを送信したときは、閲覧中のスクロール位置に関わらず常に最下部へ移動する**（自分の送信内容は必ず見せたいため、他の一般的なチャットアプリと同じ挙動）。この非対称な扱いは意図的な設計。
+   対応：`isScrolledNearBottom()`を追加し、Realtime受信時のみ、新メッセージがDOMに追加される前の時点でこの判定を行い、最下部付近にいた場合だけ`pendingScrollToBottomRef`を立てるようにした。自分がメッセージを送信したときは、閲覧中のスクロール位置に関わらず常に最下部へ移動する（意図的な非対称設計）。
 
 ### 未対応・持ち越し事項（Phase 4時点）
 
 - サインアップ画面（`app/signup/page.tsx`）のアバターアップロードは今回は対応せず。必要になったタイミングで`lib/cloudinary`の署名フローを流用して追加する
 - アップロード進捗の%表示（現状は状態文言のみ）
 - テキスト送信失敗時の自動リトライ（SRS 3.4、最大3回）は未実装
-- 画像のみのメッセージに対する`MessageHidden`（非表示）・削除機能はPhase 6で対応予定（Phase 3からの持ち越しと同じ）
+- 画像のみのメッセージに対する`MessageHidden`（非表示）・削除機能はPhase 6で対応予定
+
+## Phase 5 の実装内容・詳細
+
+SRS FR-11〜FR-13、FR-15、FR-22、FR-23 準拠。フレンド申請・フレンド/ストレンジャー一覧・ユーザー追加・ブロック・知らない人からのDM受信設定を実装。
+
+### DB変更（`docs/schema.sql` に追記済み。実際の適用はSupabase MCP `apply_migration` "phase5_friends_strangers_blocking"）
+
+新規RPC関数（すべて`SECURITY DEFINER` + `REVOKE FROM public` → `GRANT TO authenticated`の既存パターンを踏襲）：
+
+| 関数                                    | 用途                                                                                                |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `get_conversation_list()`               | フレンド/ストレンジャー一覧用。DMルーム×相手プロフィール×フレンド状態×直近メッセージを1クエリで返す |
+| `search_users(p_query text)`            | ユーザー追加UIの検索（username部分一致）。フレンド状態・既存DM roomIdも同時に返す                   |
+| `get_friend_requests()`                 | 送受信中・直近拒否のフレンド申請一覧（受信=承認拒否UI、送信=簡易通知用）                            |
+| `send_friend_request(p_addressee_id)`   | フレンド申請送信。拒否済みの同方向リクエストは`pending`へ差し戻して再利用                           |
+| `respond_to_friend_request(id, accept)` | 受信した申請の承認・拒否                                                                            |
+| `cancel_friend_request(id)`             | 自分が送った申請中リクエストの取り消し                                                              |
+| `remove_friend(p_other_user_id)`        | フレンド解除                                                                                        |
+| `mark_friend_requests_read()`           | 受信申請の既読化（ユーザー追加パネルを開いた時に呼ぶ）                                              |
+| `block_user(p_target_id)`               | ブロック登録＋既存フレンド関係の解消                                                                |
+
+既存関数の更新：
+
+- **`get_or_create_dm_room`**：新規DM作成時のみ、フレンド関係が無い場合に相手の`dm_from_stranger_enabled`（FR-22）をチェックし、falseならエラー（`does not accept DMs from strangers`）を返すよう変更。既存DM・フレンド同士は従来通りチェック無し
+
+### 追加ファイル
+
+- `app/actions/friends.ts` — フレンド申請の送信・承認・拒否・取り消し・解除・既読化のServer Actions
+- `app/actions/blocks.ts` — ブロック・ブロック解除のServer Actions（解除はRLS `blocks_delete_own` を使い直接テーブル操作、それ以外はRPC経由）
+- `app/actions/settings.ts` — `dm_from_stranger_enabled`トグル用Server Action
+- `components/home/HomeTabs.tsx` — 「フレンド／ストレンジャー／グループ」タブ（クライアント側で`friendship_status`によりフィルタ）。グループは未実装のためプレースホルダー表示
+- `components/home/AddUserPanel.tsx` — ユーザー追加UI（FR-15）。開閉式パネルに検索・フレンド申請送信/承認/拒否/取り消し・簡易ブロックを集約。検索はブラウザから`search_users` RPCを直接呼ぶ（デバウンス300ms）
+- `components/home/StrangerDmToggle.tsx` — FR-22のトグル（ホーム画面ヘッダーに暫定配置）
+
+### 変更ファイル
+
+- `app/home/page.tsx` — Phase 3の`fetchRoomList`（N+1気味の複数クエリ、持ち越し事項として記録していたもの）を`get_conversation_list` RPCへ完全に置き換え。`get_friend_requests`・`user_settings.dm_from_stranger_enabled`も並列取得し、`AddUserPanel`・`HomeTabs`・`StrangerDmToggle`へ渡す
+- `app/actions/rooms.ts` — `startDirectMessageWithUser(userId)`を追加（検索結果など、既にuser_idが分かっているUIから使う）。エラーメッセージを`mapDmError`でユーザー向け日本語に変換（ストレンジャーDM拒否・ブロックの2パターンを判別）
+- `app/chat/[roomId]/page.tsx` — `blocks`テーブルから「自分が相手をブロックしているか」を取得し`ChatRoom`へ`initialIsBlockedByMe`として渡す
+- `components/chat/ChatRoom.tsx` — ヘッダーにブロック/ブロック解除ボタンを追加。ブロック中はメッセージ入力・画像添付を無効化
+- `types/supabase.ts` — Supabase MCPの`generate_typescript_types`で再生成（Phase 5のRPC関数を反映）
+
+### 削除ファイル
+
+- `components/chat/NewDmForm.tsx` — `AddUserPanel`に統合されたため削除（リポジトリから手動で削除してください）
+
+### 設計判断・学び
+
+- **ホーム画面の「検索」タブは独立させず、ユーザー追加パネル（`AddUserPanel`）に統合した。** SRS 3.2.1では「フレンド・ストレンジャー・グループ・検索」の4タブ構成だが、「検索＝ユーザー追加」と「フレンド申請の管理」は同じ文脈の操作なので1つの開閉パネルにまとめた方が自然と判断。`docs/srs.md`本文の更新は未実施（必要なら次のセッションで反映を検討）
+- **グループチャットタブはプレースホルダーのみ。** グループチャットUI（FR-4）はどのPhaseにも未割り当てのままのため、`HomeTabs`にタブ自体は用意しつつ`disabled`にして「準備中」を表示するに留めた
+- **フレンド申請の「拒否」は行を削除せず`status='rejected'`のまま残す設計にした。** 削除してしまうと申請者側が拒否されたことを知る手段が無くなる（SRS FR-11の「拒否の結果を申請者に通知」に反する）ため。再申請時は同方向なら既存行を`pending`に差し戻し、逆方向なら新規行を作成する（`unique(requester_id, addressee_id)`制約はタプル単位のため衝突しない）
+- **ブロック時に既存のフレンド関係も解消する仕様にした（`block_user`関数内でDELETE）。** SRSに明記は無いが、ブロックした相手とフレンド関係が残ったままなのは直感に反するため。逆にブロック解除してもフレンド関係は自動復元しない（再度フレンド申請が必要）
+- **「ストレンジャー」の定義をやや緩めて解釈した。** SRSの定義は「過去に1度以上メッセージのやりとりがあるユーザー」だが、`get_conversation_list`はDMルームが存在する時点で一覧に含める（メッセージ0件でも表示）。理由：DMを開始した直後にリストから消えてしまうと使い勝手が悪いため。この定義の違いは検索対象（SRS 3.5）には適用しておらず、あくまでホーム画面の会話一覧の話
+- **`get_conversation_list`・`search_users`はブロック関係（双方向）にあるユーザーとの会話・検索結果を完全に除外する。** ただし相手が自分をブロックしている場合、既存のチャットルーム自体（`/chat/[roomId]`への直接アクセス）は`is_room_member`が真である限り閲覧可能なまま（メッセージ送信のみRLSで弾かれる）。一覧から消すだけで、ルーム自体を非表示にする対応はPhase 5のスコープ外とした
+- **`ChatRoom`のブロックボタンは「自分が相手をブロックしているか」のみ扱う。** `blocks`テーブルのRLS（`blocks_select_own`）は自分の行しか見えない設計（Phase 1由来）なので、相手が自分をブロックしているかはクライアントから判定できない。その場合は送信時にRLSで弾かれ、既存の汎用`sendError`表示に自然に乗る
+- **Supabase生成型の`Args`が無引数RPC（`get_conversation_list`等）に対して`never`になる版のcodegenだった。** `supabase.rpc("get_conversation_list")`のように第二引数を省略する呼び出しでtsc上も問題なく通ることをサンドボックスで実際に確認済み（型を手動で書き換えたりはしていない）
+- **RPC関数の戻り値の型（`generate_typescript_types`生成分）は、実際にはNULL許容なカラム（`avatar_url`・`last_message_preview`等）でも非nullの型として出力される既知の制限がある。** アプリ側のマッピング処理（`app/home/page.tsx`等）では`?? null`で防御的に扱っている
+- **検証方法：** サンドボックス環境に本リポジトリと同一のpackage.json/tsconfig.jsonで実際にファイルを再構成し、`npm install` → `npx tsc --noEmit`で型検証してから納品した
+
+### 動作確認してほしい項目（実機確認用チェックリスト）
+
+1. アカウントを2つ用意し、片方（A）からもう片方（B）のユーザーIDをユーザー追加パネルで検索し、フレンド申請を送る
+2. B側：ホーム画面のユーザー追加ボタンに未読バッジが表示され、パネルを開くと「届いているフレンド申請」にAが表示されること。開いた時点でバッジが消える（既読化）こと
+3. B側で承認 → A・B双方の「フレンド」タブに相手が表示されること
+4. 別の組み合わせで申請 → 受信側が拒否 → 送信側の「送信したフレンド申請」に「拒否されました」と表示されること。同じ相手に再度申請すると送れる（差し戻し）こと
+5. 申請中（相手が未応答）の状態で、送信側の「取り消す」から取り消せること。取り消し後は受信側の申請一覧からも消えること
+6. フレンドでない相手（見知らぬユーザー）とDMを開始 → 双方のホーム「ストレンジャー」タブに表示され、「未フレンド」等のバッジが出ること。フレンド承認後はそのまま「フレンド」タブへ移ること（会話履歴は引き継がれる）
+7. 検索結果の「メッセージ」ボタンから、フレンド関係の有無に関わらずDMを開始できること（既存DMがあればそこへ遷移、無ければ新規作成）
+8. 自分の「知らない人からのDM」トグルをオフにした状態で、フレンドでない相手が自分に新規DMを開始しようとするとエラーメッセージが出ること。既存DM・フレンド相手からのDM開始は通常通り成功すること
+9. チャット画面右上の「ブロック」→ 相手がホームの一覧（フレンド/ストレンジャーどちらのタブからも）から消えること。メッセージ入力欄・画像添付ボタンが無効化されること
+10. 「ブロック解除」→ 再度一覧に表示され送信できるようになること。ただしブロック前にフレンドだった場合でもフレンド関係は自動復元されない（再度フレンド申請が必要）ことを確認
+11. 検索結果一覧の「ブロック」からも同様にブロックでき、以降その相手は検索結果・一覧に出てこなくなること
+12. 相手アカウント側から自分をブロックしてもらった状態で、自分からメッセージを送信すると（一覧上は普通に見えたままでも）送信時にエラーになることを確認する（相手が自分をブロックしているかはUI上判定できない仕様のため、送信失敗時の挙動として確認）
+
+### 未対応・持ち越し事項（Phase 5時点）
+
+- SRS 3.2.1の「検索」タブは独立実装せず、`AddUserPanel`に統合（上記「設計判断」参照）。本文更新の要否は次回判断
+- グループチャットタブは表示のみでプレースホルダー（FR-4実装はPhase未割り当てのまま）
+- ブロックした相手との既存チャットルーム自体を一覧外だけでなく閲覧不可にする対応は未実装
+- フレンド申請・ブロックにRealtime購読は付けていない（一覧はページ遷移・Server Action後の`router.refresh()`で更新される設計。バッジのリアルタイム更新が必要になったら`friendships`テーブルもRealtime購読対象に追加を検討）
+- `dm_from_stranger_enabled`トグルはホーム画面ヘッダーへの暫定配置。専用の設定画面はPhase 7で作る想定（アプリ設定画面・認証設定・通知設定と合わせて）
 
 ## 検討中のアイデア・未確定のPhase割り当て
 
-以下はPhase 4完了後の会話で出た検討事項。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミング（Phase 5開始時など）で扱いを決めること。
+以下はPhase 4完了後の会話で出た検討事項で、Phase 5完了時点でも状況は大きく変わっていない。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミングで扱いを決めること。
 
 ### 1. どのPhaseにも未割り当てのSRS要件
 
-- **グループチャットUI（FR-4）：** DB・RLSはグループ対応済みだが、`app/chat/[roomId]/page.tsx`は「DM相手1人」前提のまま実装されている。Phase 5（フレンド機能でルーム一覧を触るタイミング）と一緒にするか、独立したPhaseにするか未決定
+- **グループチャットUI（FR-4）：** DB・RLSはグループ対応済みだが、`app/chat/[roomId]/page.tsx`・`get_conversation_list`はいずれも「DM相手1人」前提のまま実装されている。`HomeTabs`にグループタブの見た目だけは用意した（disabled）。Phase割り当ては引き続き未決定
 - **テキスト送信失敗時の自動リトライ（SRS 3.4、最大3回）：** 画像アップロード失敗時の手動リトライ（選択中の画像・本文を保持したまま再送信可）はPhase 4で対応済みだが、テキスト送信そのものの自動リトライは未実装・未割り当て
-- **真の楽観的更新**（送信直後に仮IDで即座に表示 → サーバー確定後に差し替え）：Phase 3から持ち越しのメモはあるが、Phase未割り当て。体感速度に関わるため、Phase 7「低スペック最適化」とまとめるのが良さそうという話が出た
+- **真の楽観的更新**（送信直後に仮IDで即座に表示 → サーバー確定後に差し替え）：Phase未割り当てのまま。体感速度に関わるため、Phase 7「低スペック最適化」とまとめるのが良さそうという話が出ている
 
 ### 2. 複数チャットレイアウト対応（新規アイデア・未実装）
 
@@ -258,9 +327,9 @@ SRS FR-7/FR-8、3.5「画像データ」準拠。画像送信・閲覧機能を�
 - 最初から汎用的な「レイアウトプラグイン機構」のように作り込むのは、このアプリの規模に対して過剰設計。まずはLINE風・Discord風の2種類の切り替えだけ実装し、3種類目以降は後から追加コンポーネントとして足していく方針でよい、という方向性で合意
 - 設定の保存場所は`user_settings`に新カラム（例：`chat_layout`）を追加する形が、既存の`dm_from_stranger_enabled`等と同じパターンで自然。ルーム単位ではなくユーザー単位の設定にする想定
 
-**Phase位置づけの見立て：** グループチャットUI実装後、Phase 7の仕上げか独立Phaseとして検討。今すぐ決定する必要はない。
+**Phase位置づけの見立て：** グループチャットUI実装後、Phase 7の仕上げか独立Phaseとして検討。今すぐ決定する必要はない。**現時点では実装しないこと。**
 
-**`docs/srs.md`への反映：** 未実施。Future Extensionsの「UIテーマ切り替え」を「UIテーマ・チャットレイアウト切り替え」のように具体化する案が出ているが、実際に編集するかはユーザーの判断待ち。Phase 5開始時、あるいは上記1.の3項目を正式にPhase割り当てするタイミングで一緒に検討する。
+**`docs/srs.md`への反映：** 未実施。Future Extensionsの「UIテーマ切り替え」を「UIテーマ・チャットレイアウト切り替え」のように具体化する案が出ているが、実際に編集するかはユーザーの判断待ち。
 
 ## 開発上の重要な原則
 
@@ -268,13 +337,13 @@ SRS FR-7/FR-8、3.5「画像データ」準拠。画像送信・閲覧機能を�
 - **MXバイパス：** `signUp()`は使わず`adminClient.auth.admin.createUser()` + `email_confirm: true`を使う
 - **service_roleの権限：** SQL Editor / migration API で作成したテーブルは`service_role`への権限が自動付与されないため、`GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role`を忘れずに実行する
 - **トリガーの`search_path`：** authスキーマ配下から実行されるトリガー関数は`SET search_path = public`が必須
-- **パフォーマンス：** メッセージ送受信などホットパスは、Route Handlerを経由せずSupabaseクライアントを直接呼び出す。Route Handlerは認証・特権操作専用に限定する（Cloudinaryの署名発行も同じ原則。ただしファイル本体はRoute Handlerを経由させず、ブラウザから直接Cloudinaryへ送る）
+- **パフォーマンス：** メッセージ送受信などホットパスは、Route Handlerを経由せずSupabaseクライアントを直接呼び出す。Route Handlerは認証・特権操作専用に限定する（Cloudinaryの署名発行も同じ原則。ただしファイル本体はRoute Handlerを経由させず、ブラウザから直接Cloudinaryへ送る）。一覧系の複雑な集計（Phase 5の`get_conversation_list`等）はRPC（SECURITY DEFINER関数）に寄せてN+1を避ける
 - **Realtime対象テーブルの登録を忘れない：** 新しくRealtime購読が必要なテーブルを追加したら、`supabase_realtime`パブリケーションへの追加を忘れずに行う
-- **コード提供方針：** 部分的なスニペットではなく、そのまま置き換え可能な完全なファイルを提供する。ジェネリクス・JSXなど`<`を含む長いコードはチャットのコードブロックではなくファイルとして渡す
+- **コード提供方針：** 部分的なスニペットではなく、そのまま置き換え可能な完全なファイルを提供する。ジェネリクス・JSXなど`<`を含む長いコードはチャットのコードブロックではなくファイルとして渡す。可能な場合はサンドボックスに同一構成のプロジェクトを再構築し`tsc --noEmit`で検証してから渡す
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
 
-## ファイル構成（現時点）
+## ファイル構成（Phase 5時点）
 
 ```
 tiliq-chat/
@@ -288,11 +357,14 @@ tiliq-chat/
 │   │       └── sign/route.ts    # Cloudinary署名発行（Phase 4）
 │   ├── login/page.tsx           # ログイン画面（Phase 2）
 │   ├── signup/page.tsx          # サインアップ画面（Phase 2）
-│   ├── home/page.tsx            # チャット一覧画面（Phase 3）
-│   ├── chat/[roomId]/page.tsx   # チャット画面（Phase 3）
+│   ├── home/page.tsx            # チャット一覧画面（Phase 3。Phase 5でタブ+ユーザー追加パネルへ全面拡張）
+│   ├── chat/[roomId]/page.tsx   # チャット画面（Phase 3。Phase 5でブロック状態取得を追加）
 │   └── actions/
 │       ├── auth.ts              # signup/login/logout Server Actions（Phase 2）
-│       └── rooms.ts             # startDirectMessage Server Action（Phase 3）
+│       ├── rooms.ts             # startDirectMessage系 Server Actions（Phase 3。Phase 5でuserId版を追加）
+│       ├── friends.ts           # フレンド申請系 Server Actions（Phase 5・新規）
+│       ├── blocks.ts            # ブロック系 Server Actions（Phase 5・新規）
+│       └── settings.ts          # dm_from_stranger_enabled更新（Phase 5・新規）
 ├── lib/
 │   ├── supabase/
 │   │   ├── client.ts            # ブラウザ用クライアント
@@ -306,30 +378,34 @@ tiliq-chat/
 │       └── compress.ts          # 送信前バリデーション・リサイズ（Phase 4）
 ├── components/
 │   ├── TiliquaMark.tsx          # ブランドロゴ
-│   └── chat/
-│       ├── ChatRoom.tsx         # チャット画面本体・Realtime購読・画像添付（Phase 3/4）
-│       ├── MessageBubble.tsx    # メッセージ表示（Phase 3/4）
-│       └── NewDmForm.tsx        # DM開始フォーム（Phase 3）
+│   ├── chat/
+│   │   ├── ChatRoom.tsx         # チャット画面本体・Realtime購読・画像添付・ブロックUI（Phase 3/4/5）
+│   │   └── MessageBubble.tsx    # メッセージ表示（Phase 3/4）
+│   └── home/                    # Phase 5・新規ディレクトリ
+│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ
+│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック
+│       └── StrangerDmToggle.tsx # FR-22トグル
 ├── types/
-│   └── supabase.ts              # Supabase生成型定義（Phase 3）
+│   └── supabase.ts              # Supabase生成型定義（Phase 3で導入、Phase 5で再生成）
 ├── public/
 │   ├── manifest.webmanifest
 │   ├── icon-192.png / icon-512.png / icon-maskable-512.png / apple-touch-icon.png
 ├── docs/
 │   ├── srs.md                   # 要件定義（正）
-│   └── schema.sql               # DBスキーマ参照用ファイル
+│   └── schema.sql               # DBスキーマ参照用ファイル（Phase 5のRPCを追記）
 ├── proxy.ts                     # ルート保護・セッションリフレッシュ（Phase 2）
 ├── .env.example
 └── CLAUDE.md（このファイル）
 ```
 
-## 次にやること（Phase 5）
+（`components/chat/NewDmForm.tsx` はPhase 5で`AddUserPanel`に統合されたため削除済み。手元のリポジトリからも削除してください）
 
-フレンド・ストレンジャー・ブロック機能。SRS FR-11〜FR-13、FR-15、FR-22、FR-23、3.5「検索対象の定義」を参照。
+## 次にやること（Phase 6）
 
-1. `friendships`（申請・承認・拒否・既読バッジ）と`blocks`テーブルはPhase 1で作成済み。RLSも設定済みなので、UIとServer Action/クエリの実装が中心になる
-2. `app/home/page.tsx`のチャット一覧を「フレンド／ストレンジャー／グループ／検索」の4タブ構成に拡張（SRS 3.2.1）
-3. 現状DM相手は無条件に表示されているが、フレンド関係の有無に応じて「フレンド一覧」「ストレンジャー一覧」に振り分ける
-4. `fetchRoomList`（Phase 3からのN+1の持ち越し）をこのタイミングでビュー化・RPC化するか判断する
-5. ユーザー追加UI（ユーザーIDでフレンド申請 or DM開始）は`components/chat/NewDmForm.tsx`をベースに拡張、または新規コンポーネント化
-6. ブロック機能実装時は、既存の`is_blocked()`ヘルパー関数・`get_or_create_dm_room`のブロックチェックが既に組み込み済みであることを確認しながら進める
+一時チャット・追加認証・非表示メッセージ。SRS FR-16〜FR-21、3.7、3.8を参照。
+
+1. **一時チャット（FR-10、3.7）：** Room作成UIに有効期限選択（10分/1時間/24時間/7日/カスタム最大90日）を追加。`rooms.expires_at`は用意済み。削除処理はSupabase Edge Functions または pg_cronで定期実行（実行間隔最大10分、期限超過から最大10分以内に削除完了を保証）
+2. **追加認証（FR-19、FR-20、3.8）：** 認証PIN／認証キーの設定UI、割り当て設定（起動時・各チャット・非表示一覧）。`user_settings`の`auth_type`/`auth_secret`/`auth_scope_launch`/`auth_scope_hidden_list`/`auth_failed_attempts`/`auth_locked_until`はPhase 1で用意済み。5回連続失敗でロック（解除方法は実装時に決定、SRS 3.8）
+3. **メッセージ削除（FR-16）・非表示（FR-17、FR-18）：** `messages.deleted_at`・`message_hidden`テーブルは用意済み。RLS（`messages_update_own_delete_only`・`message_hidden_*`）も設定済みなので、UIと（非表示一覧確認時の）認証フローの実装が中心になる
+4. Phase 5で暫定配置した`StrangerDmToggle`を、Phase 6または7で作る予定のアプリ設定画面へ統合するか検討する
+5. チャット設定・オプション画面（SRS 3.2.1）自体がまだ存在しないため、Phase 6でその土台（認証割り当て・非表示メッセージ一覧を含む）を新設することになる見込み

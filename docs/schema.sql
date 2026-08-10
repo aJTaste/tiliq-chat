@@ -1,5 +1,5 @@
 -- =============================================================================
--- Tiliqua DBスキーマ（Phase 1〜3）
+-- Tiliqua DBスキーマ（Phase 1〜5）
 -- Supabase project: tiliq-chat (ref: xewprddypddcxkwvcytu / ap-northeast-1)
 -- 参照用ファイル。実際の適用は Supabase の migration 履歴（apply_migration）で管理。
 -- SRS: docs/srs.md 3.5（データモデル）を、profiles / user_settings に分割して実装。
@@ -485,3 +485,443 @@ grant execute on function public.get_or_create_dm_room(uuid) to authenticated;
 -- =============================================================================
 
 alter publication supabase_realtime add table public.messages;
+-- =============================================================================
+-- Phase 5: フレンド・ストレンジャー・ブロック機能
+-- SRS FR-11〜FR-13, FR-15, FR-22, FR-23 準拠
+-- 適用済み（Supabase MCP: apply_migration "phase5_friends_strangers_blocking"）。
+-- このファイルはdocs/schema.sqlの末尾にそのまま追記する。
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 1. get_or_create_dm_room の更新
+-- 新規DM作成時のみ、相手の dm_from_stranger_enabled（FR-22）をチェックする。
+-- 既存DMがある場合・フレンド同士の場合はチェック不要（既存の会話は継続可能）。
+-- -----------------------------------------------------------------------------
+create or replace function public.get_or_create_dm_room(p_other_user_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room_id uuid;
+  v_self uuid := auth.uid();
+  v_are_friends boolean;
+  v_target_allows_strangers boolean;
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if v_self = p_other_user_id then
+    raise exception 'cannot create DM room with self';
+  end if;
+
+  if not exists (select 1 from public.profiles where id = p_other_user_id) then
+    raise exception 'target user not found';
+  end if;
+
+  if public.is_blocked(v_self, p_other_user_id) then
+    raise exception 'cannot start DM: blocked';
+  end if;
+
+  select rm1.room_id into v_room_id
+  from public.room_members rm1
+  join public.room_members rm2 on rm1.room_id = rm2.room_id
+  join public.rooms r on r.id = rm1.room_id
+  where rm1.user_id = v_self
+    and rm2.user_id = p_other_user_id
+    and r.is_group = false
+  limit 1;
+
+  if v_room_id is not null then
+    return v_room_id;
+  end if;
+
+  select exists (
+    select 1 from public.friendships
+    where status = 'accepted'
+      and ((requester_id = v_self and addressee_id = p_other_user_id)
+        or (requester_id = p_other_user_id and addressee_id = v_self))
+  ) into v_are_friends;
+
+  if not v_are_friends then
+    select coalesce(dm_from_stranger_enabled, true) into v_target_allows_strangers
+    from public.user_settings
+    where user_id = p_other_user_id;
+
+    if not coalesce(v_target_allows_strangers, true) then
+      raise exception 'target user does not accept DMs from strangers';
+    end if;
+  end if;
+
+  insert into public.rooms (is_group) values (false)
+  returning id into v_room_id;
+
+  insert into public.room_members (room_id, user_id, role)
+  values
+    (v_room_id, v_self, 'owner'),
+    (v_room_id, p_other_user_id, 'member');
+
+  return v_room_id;
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 2. get_conversation_list
+-- ホーム画面の「フレンド」「ストレンジャー」タブ用。
+-- 自分が参加するDM（is_group=false）ルームを、相手のプロフィール・
+-- フレンド状態・直近メッセージとともに1クエリで返す（旧fetchRoomListのN+1を解消）。
+-- ブロック関係（双方向）にあるユーザーとの会話は一覧から除外する。
+-- -----------------------------------------------------------------------------
+create or replace function public.get_conversation_list()
+returns table (
+  room_id uuid,
+  other_user_id uuid,
+  other_username text,
+  other_display_name text,
+  other_avatar_url text,
+  friendship_status text,
+  last_message_preview text,
+  last_message_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  with my_rooms as (
+    select rm.room_id
+    from public.room_members rm
+    join public.rooms r on r.id = rm.room_id
+    where rm.user_id = auth.uid() and r.is_group = false
+  ),
+  other as (
+    select rm.room_id, rm.user_id as other_user_id
+    from public.room_members rm
+    where rm.room_id in (select room_id from my_rooms)
+      and rm.user_id <> auth.uid()
+  ),
+  last_msg as (
+    select distinct on (m.room_id)
+      m.room_id, m.content, m.image_url, m.created_at
+    from public.messages m
+    where m.room_id in (select room_id from my_rooms)
+      and m.deleted_at is null
+    order by m.room_id, m.created_at desc
+  ),
+  fs as (
+    select
+      case when f.requester_id = auth.uid() then f.addressee_id else f.requester_id end as counterpart_id,
+      f.status,
+      f.requester_id
+    from public.friendships f
+    where f.requester_id = auth.uid() or f.addressee_id = auth.uid()
+  )
+  select
+    o.room_id,
+    o.other_user_id,
+    p.username,
+    p.display_name,
+    p.avatar_url,
+    coalesce(
+      case
+        when fs.status = 'accepted' then 'accepted'
+        when fs.status = 'pending' and fs.requester_id = auth.uid() then 'pending_sent'
+        when fs.status = 'pending' then 'pending_received'
+        when fs.status = 'rejected' then 'rejected'
+      end,
+      'none'
+    ) as friendship_status,
+    coalesce(lm.content, case when lm.image_url is not null then '📷 画像' else null end) as last_message_preview,
+    lm.created_at as last_message_at
+  from other o
+  join public.profiles p on p.id = o.other_user_id
+  left join last_msg lm on lm.room_id = o.room_id
+  left join fs on fs.counterpart_id = o.other_user_id
+  where not public.is_blocked(auth.uid(), o.other_user_id)
+  order by lm.created_at desc nulls last
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 3. search_users
+-- ユーザー追加UI（FR-15）用。ユーザーID(username)部分一致検索。
+-- 自分自身・ブロック関係にあるユーザーは除外。
+-- -----------------------------------------------------------------------------
+create or replace function public.search_users(p_query text)
+returns table (
+  user_id uuid,
+  username text,
+  display_name text,
+  avatar_url text,
+  friendship_status text,
+  existing_room_id uuid
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  with fs as (
+    select
+      case when f.requester_id = auth.uid() then f.addressee_id else f.requester_id end as counterpart_id,
+      f.status,
+      f.requester_id
+    from public.friendships f
+    where f.requester_id = auth.uid() or f.addressee_id = auth.uid()
+  ),
+  existing_dm as (
+    select rm1.room_id, rm2.user_id as other_user_id
+    from public.room_members rm1
+    join public.room_members rm2 on rm1.room_id = rm2.room_id and rm2.user_id <> auth.uid()
+    join public.rooms r on r.id = rm1.room_id and r.is_group = false
+    where rm1.user_id = auth.uid()
+  )
+  select
+    p.id,
+    p.username,
+    p.display_name,
+    p.avatar_url,
+    coalesce(
+      case
+        when fs.status = 'accepted' then 'accepted'
+        when fs.status = 'pending' and fs.requester_id = auth.uid() then 'pending_sent'
+        when fs.status = 'pending' then 'pending_received'
+        when fs.status = 'rejected' then 'rejected'
+      end,
+      'none'
+    ) as friendship_status,
+    ed.room_id as existing_room_id
+  from public.profiles p
+  left join fs on fs.counterpart_id = p.id
+  left join existing_dm ed on ed.other_user_id = p.id
+  where p.id <> auth.uid()
+    and p_query is not null
+    and length(trim(p_query)) > 0
+    and p.username ilike ('%' || trim(p_query) || '%')
+    and not public.is_blocked(auth.uid(), p.id)
+  order by p.username
+  limit 20
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 4. get_friend_requests
+-- 送受信中（pending）・直近で拒否された（rejected）フレンド申請の一覧。
+-- 受信分は承認・拒否UIに、送信分はステータス表示（簡易通知）に使う。
+-- -----------------------------------------------------------------------------
+create or replace function public.get_friend_requests()
+returns table (
+  friendship_id uuid,
+  direction text,
+  counterpart_id uuid,
+  counterpart_username text,
+  counterpart_display_name text,
+  counterpart_avatar_url text,
+  status text,
+  is_read boolean,
+  created_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select
+    f.id,
+    case when f.addressee_id = auth.uid() then 'received' else 'sent' end,
+    case when f.addressee_id = auth.uid() then f.requester_id else f.addressee_id end,
+    p.username,
+    p.display_name,
+    p.avatar_url,
+    f.status,
+    f.is_read,
+    f.created_at
+  from public.friendships f
+  join public.profiles p
+    on p.id = case when f.addressee_id = auth.uid() then f.requester_id else f.addressee_id end
+  where (f.requester_id = auth.uid() or f.addressee_id = auth.uid())
+    and f.status in ('pending', 'rejected')
+  order by f.created_at desc
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 5. フレンド申請の操作系RPC
+-- -----------------------------------------------------------------------------
+create or replace function public.send_friend_request(p_addressee_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_self uuid := auth.uid();
+  v_existing record;
+  v_id uuid;
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+  if v_self = p_addressee_id then
+    raise exception 'cannot friend yourself';
+  end if;
+  if public.is_blocked(v_self, p_addressee_id) then
+    raise exception 'blocked';
+  end if;
+  if not exists (select 1 from public.profiles where id = p_addressee_id) then
+    raise exception 'user not found';
+  end if;
+
+  select * into v_existing
+  from public.friendships
+  where (requester_id = v_self and addressee_id = p_addressee_id)
+     or (requester_id = p_addressee_id and addressee_id = v_self)
+  limit 1;
+
+  if v_existing.id is not null then
+    if v_existing.status = 'accepted' then
+      raise exception 'already friends';
+    elsif v_existing.status = 'pending' then
+      raise exception 'request already pending';
+    else
+      -- rejected: 同方向なら既存行をpendingへ差し戻す。逆方向なら新規行を作る（unique制約はrequester/addresseeの組で判定されるため衝突しない）
+      if v_existing.requester_id = v_self then
+        update public.friendships
+        set status = 'pending', is_read = false, updated_at = now()
+        where id = v_existing.id
+        returning id into v_id;
+        return v_id;
+      end if;
+    end if;
+  end if;
+
+  insert into public.friendships (requester_id, addressee_id)
+  values (v_self, p_addressee_id)
+  returning id into v_id;
+
+  return v_id;
+end;
+$$;
+
+create or replace function public.respond_to_friend_request(p_friendship_id uuid, p_accept boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.friendships
+  set status = case when p_accept then 'accepted' else 'rejected' end,
+      is_read = true,
+      updated_at = now()
+  where id = p_friendship_id
+    and addressee_id = auth.uid()
+    and status = 'pending';
+
+  if not found then
+    raise exception 'request not found or not actionable';
+  end if;
+end;
+$$;
+
+create or replace function public.cancel_friend_request(p_friendship_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  delete from public.friendships
+  where id = p_friendship_id
+    and requester_id = auth.uid()
+    and status = 'pending';
+
+  if not found then
+    raise exception 'request not found or not cancellable';
+  end if;
+end;
+$$;
+
+create or replace function public.remove_friend(p_other_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  delete from public.friendships
+  where status = 'accepted'
+    and ((requester_id = auth.uid() and addressee_id = p_other_user_id)
+      or (requester_id = p_other_user_id and addressee_id = auth.uid()));
+
+  if not found then
+    raise exception 'friendship not found';
+  end if;
+end;
+$$;
+
+create or replace function public.mark_friend_requests_read()
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.friendships
+  set is_read = true
+  where addressee_id = auth.uid() and status = 'pending' and is_read = false;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 6. ブロック操作RPC
+-- ブロック時、既存のフレンド関係（承認済み/申請中いずれも）は解消する。
+-- -----------------------------------------------------------------------------
+create or replace function public.block_user(p_target_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_self uuid := auth.uid();
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+  if v_self = p_target_id then
+    raise exception 'cannot block yourself';
+  end if;
+  if not exists (select 1 from public.profiles where id = p_target_id) then
+    raise exception 'user not found';
+  end if;
+
+  insert into public.blocks (blocker_id, blocked_id)
+  values (v_self, p_target_id)
+  on conflict (blocker_id, blocked_id) do nothing;
+
+  delete from public.friendships
+  where (requester_id = v_self and addressee_id = p_target_id)
+     or (requester_id = p_target_id and addressee_id = v_self);
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- 7. EXECUTE権限（既存パターンを踏襲：public/anonからrevoke、authenticatedのみ許可）
+-- -----------------------------------------------------------------------------
+revoke execute on function public.get_conversation_list() from public;
+revoke execute on function public.search_users(text) from public;
+revoke execute on function public.get_friend_requests() from public;
+revoke execute on function public.send_friend_request(uuid) from public;
+revoke execute on function public.respond_to_friend_request(uuid, boolean) from public;
+revoke execute on function public.cancel_friend_request(uuid) from public;
+revoke execute on function public.remove_friend(uuid) from public;
+revoke execute on function public.mark_friend_requests_read() from public;
+revoke execute on function public.block_user(uuid) from public;
+
+grant execute on function public.get_conversation_list() to authenticated;
+grant execute on function public.search_users(text) to authenticated;
+grant execute on function public.get_friend_requests() to authenticated;
+grant execute on function public.send_friend_request(uuid) to authenticated;
+grant execute on function public.respond_to_friend_request(uuid, boolean) to authenticated;
+grant execute on function public.cancel_friend_request(uuid) to authenticated;
+grant execute on function public.remove_friend(uuid) to authenticated;
+grant execute on function public.mark_friend_requests_read() to authenticated;
+grant execute on function public.block_user(uuid) to authenticated;

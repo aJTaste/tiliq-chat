@@ -5,10 +5,12 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useTransition,
   type ChangeEvent,
   type FormEvent,
   type KeyboardEvent,
 } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { Tables } from "@/types/supabase";
 import { MessageBubble } from "./MessageBubble";
@@ -21,6 +23,7 @@ import {
   ImageUploadError,
   uploadImageToCloudinary,
 } from "@/lib/cloudinary/upload";
+import { blockUser, unblockUser } from "@/app/actions/blocks";
 
 type MessageRow = Tables<"messages">;
 
@@ -39,6 +42,7 @@ type ChatRoomProps = {
   };
   initialMessages: MessageRow[];
   initialHasMore: boolean;
+  initialIsBlockedByMe: boolean;
 };
 
 export function ChatRoom({
@@ -47,10 +51,10 @@ export function ChatRoom({
   otherUser,
   initialMessages,
   initialHasMore,
+  initialIsBlockedByMe,
 }: ChatRoomProps) {
-  // createClient()は毎回新しいインスタンスを返すため、useState の遅延初期化で1回だけ生成する
-  // （useRef(createClient())だと引数が毎レンダー評価されてしまい無駄が多い）
   const [supabase] = useState(() => createClient());
+  const router = useRouter();
 
   const [messages, setMessages] = useState<MessageRow[]>(initialMessages);
   const [hasMore, setHasMore] = useState(initialHasMore);
@@ -59,7 +63,13 @@ export function ChatRoom({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
-  // Phase 4: 画像添付関連の状態
+  // Phase 5: ブロック機能（FR-23）。相手が自分をブロックしているかはRLS上見えないため、
+  // ここで扱うのは「自分が相手をブロックしているか」のみ。相手側からブロックされている場合は
+  // メッセージ送信時にRLSで弾かれ、汎用のsendErrorとして表示される。
+  const [isBlockedByMe, setIsBlockedByMe] = useState(initialIsBlockedByMe);
+  const [blockPending, startBlockTransition] = useTransition();
+  const [blockError, setBlockError] = useState<string | null>(null);
+
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [uploadStage, setUploadStage] = useState<UploadStage>("idle");
@@ -68,16 +78,9 @@ export function ChatRoom({
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // 過去メッセージを先頭に追加する直前のscrollHeightを一時保持し、
-  // 追加後にスクロール位置がガクッと動かないよう補正するために使う
   const pendingScrollAdjustRef = useRef<number | null>(null);
-  // 新着メッセージ（自分の送信 / Realtime受信）が来たとき、
-  // 「次にmessagesがDOMへ反映された後」に最下部へスクロールすることを予約するフラグ
   const pendingScrollToBottomRef = useRef(false);
 
-  // スクロールコンテナが「ほぼ最下部」にあるかどうかを判定する。
-  // Realtimeで新着メッセージを受信した際、過去のメッセージを読んでいる最中なら
-  // 自動スクロールで割り込まない（会話を追っている最中の人だけ追従させる）ために使う。
   const NEAR_BOTTOM_THRESHOLD_PX = 120;
   function isScrolledNearBottom() {
     const container = scrollContainerRef.current;
@@ -88,13 +91,11 @@ export function ChatRoom({
     );
   }
 
-  // 初回マウント時に最下部へスクロール
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "auto" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 過去メッセージをmessages配列の先頭に追加した直後、スクロール位置を維持する
   useLayoutEffect(() => {
     if (pendingScrollAdjustRef.current !== null && scrollContainerRef.current) {
       const container = scrollContainerRef.current;
@@ -104,17 +105,6 @@ export function ChatRoom({
     }
   }, [messages]);
 
-  // 新着メッセージ（自分の送信 / Realtime受信）を最下部へスクロールする。
-  //
-  // 以前は setMessages(...) の直後に同期で bottomRef.current?.scrollIntoView() を呼んでいたが、
-  // Reactの状態更新はDOMへの反映が非同期（次のコミット）のため、
-  // その時点ではまだ新しいメッセージがDOMに挿入されておらず、
-  // 「新メッセージが追加される前の一番下」を基準にスクロールしてしまっていた。
-  // 結果として、実際に新メッセージが挿入された後は「最新メッセージの少し上」で
-  // 止まって見えるバグになっていた（テキスト・画像問わず発生）。
-  //
-  // messagesが実際にコミットされた後に発火するuseLayoutEffect側でスクロールすることで、
-  // 常に正しい最下部へ届くようにした。
   useLayoutEffect(() => {
     if (pendingScrollToBottomRef.current) {
       pendingScrollToBottomRef.current = false;
@@ -122,11 +112,6 @@ export function ChatRoom({
     }
   }, [messages]);
 
-  // 入力内容に合わせてtextareaの高さを自動調整する。
-  // heightを一旦"auto"に戻してからscrollHeightを測るのがポイント
-  // （そうしないと、行が減ったときに高さが縮まらない）。
-  // 実際の見た目の上限は className側の max-h-32 が担い、
-  // それを超えたらCSSが自動でスクロール可能にする。
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -134,15 +119,12 @@ export function ChatRoom({
     el.style.height = `${el.scrollHeight}px`;
   }, [inputValue]);
 
-  // 選択中の画像プレビュー用Object URLは使い終わったら必ず解放する（メモリリーク防止）
   useEffect(() => {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
   }, [previewUrl]);
 
-  // Realtime購読：このルームへの新規メッセージINSERTのみ購読する。
-  // 画面表示時のみ購読・離脱時に解除（SRS 3.6の要件）。
   useEffect(() => {
     const channel = supabase
       .channel(`room-messages:${roomId}`)
@@ -156,13 +138,10 @@ export function ChatRoom({
         },
         (payload) => {
           const newMessage = payload.new as MessageRow;
-          // 過去のメッセージを読んでいる最中（最下部から離れている）なら自動スクロールしない。
-          // 判定は新メッセージがDOMに追加される「前」の現在のスクロール位置で行う。
           if (isScrolledNearBottom()) {
             pendingScrollToBottomRef.current = true;
           }
           setMessages((prev) => {
-            // 自分の送信分はhandleSend側で既に追加済みの場合があるため重複を防ぐ
             if (prev.some((m) => m.id === newMessage.id)) return prev;
             return [...prev, newMessage];
           });
@@ -210,7 +189,6 @@ export function ChatRoom({
 
   function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
-    // 同じファイルを続けて選び直してもchangeイベントが発火するようにリセットしておく
     e.target.value = "";
     if (!file) return;
 
@@ -259,7 +237,6 @@ export function ChatRoom({
             ? err.message
             : "画像のアップロードに失敗しました。もう一度お試しください。",
         );
-        // 本文・選択中の画像はどちらも保持し、そのまま再送信ボタンで再試行できるようにする
         return;
       }
       setUploadStage("idle");
@@ -283,18 +260,32 @@ export function ChatRoom({
     if (error || !data) {
       setSendError("送信に失敗しました。もう一度お試しください。");
       setInputValue(content);
-      // 画像は selectedFile に残ったままなので、再送信時に再アップロードされる
       return;
     }
 
-    // 自分の送信時は、閲覧中のスクロール位置に関わらず常に最下部へ移動する
-    // （Realtime受信時と異なり、自分が送った内容は必ず見せたいため）
     pendingScrollToBottomRef.current = true;
     setMessages((prev) => {
       if (prev.some((m) => m.id === data.id)) return prev;
       return [...prev, data];
     });
     clearSelectedImage();
+  }
+
+  function handleToggleBlock() {
+    setBlockError(null);
+    const next = !isBlockedByMe;
+    startBlockTransition(async () => {
+      const result = next
+        ? await blockUser(otherUser.id)
+        : await unblockUser(otherUser.id);
+
+      if (!result.success) {
+        setBlockError(result.error);
+        return;
+      }
+      setIsBlockedByMe(next);
+      router.refresh();
+    });
   }
 
   function handleSubmit(e: FormEvent) {
@@ -310,7 +301,9 @@ export function ChatRoom({
   }
 
   const canSend =
-    !sending && (inputValue.trim().length > 0 || selectedFile !== null);
+    !sending &&
+    !isBlockedByMe &&
+    (inputValue.trim().length > 0 || selectedFile !== null);
 
   return (
     <div className="flex h-screen flex-col">
@@ -326,7 +319,23 @@ export function ChatRoom({
             @{otherUser.username}
           </p>
         </div>
+        <button
+          type="button"
+          onClick={handleToggleBlock}
+          disabled={blockPending}
+          className="ml-auto shrink-0 rounded-lg border border-band px-3 py-1.5 text-xs text-ink-muted transition-colors hover:bg-surface-raised disabled:opacity-60"
+        >
+          {isBlockedByMe ? "ブロック解除" : "ブロック"}
+        </button>
       </header>
+      {blockError && (
+        <p
+          className="border-b border-band/60 px-4 py-2 text-xs text-clay"
+          role="alert"
+        >
+          {blockError}
+        </p>
+      )}
 
       <div
         ref={scrollContainerRef}
@@ -365,7 +374,6 @@ export function ChatRoom({
         {previewUrl && (
           <div className="flex items-center gap-2">
             <div className="relative">
-              {/* 送信前のローカルプレビューなのでCloudinary変換は不要、素の<img>でよい */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={previewUrl}
@@ -403,7 +411,7 @@ export function ChatRoom({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={sending}
+            disabled={sending || isBlockedByMe}
             aria-label="画像を添付"
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-band text-ink-muted transition-colors hover:bg-surface-raised disabled:opacity-60"
           >
@@ -427,8 +435,11 @@ export function ChatRoom({
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             rows={1}
-            placeholder="メッセージを入力"
-            className="max-h-32 flex-1 resize-none overflow-y-auto rounded-lg border border-band bg-surface-raised px-3 py-2 text-ink outline-none focus-visible:border-tongue"
+            disabled={isBlockedByMe}
+            placeholder={
+              isBlockedByMe ? "ブロック中は送信できません" : "メッセージを入力"
+            }
+            className="max-h-32 flex-1 resize-none overflow-y-auto rounded-lg border border-band bg-surface-raised px-3 py-2 text-ink outline-none focus-visible:border-tongue disabled:opacity-60"
           />
           <button
             type="submit"
