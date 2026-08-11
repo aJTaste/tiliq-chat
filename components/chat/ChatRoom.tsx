@@ -24,6 +24,8 @@ import {
   uploadImageToCloudinary,
 } from "@/lib/cloudinary/upload";
 import { blockUser, unblockUser } from "@/app/actions/blocks";
+import { deleteMessage, hideMessage } from "@/app/actions/messages";
+import { ChatRoomOptionsMenu } from "./ChatRoomOptionsMenu";
 
 type MessageRow = Tables<"messages">;
 
@@ -43,6 +45,9 @@ type ChatRoomProps = {
   initialMessages: MessageRow[];
   initialHasMore: boolean;
   initialIsBlockedByMe: boolean;
+  initialHiddenMessageIds: string[];
+  initialAuthRequired: boolean;
+  isTemporary: boolean;
 };
 
 export function ChatRoom({
@@ -52,6 +57,9 @@ export function ChatRoom({
   initialMessages,
   initialHasMore,
   initialIsBlockedByMe,
+  initialHiddenMessageIds,
+  initialAuthRequired,
+  isTemporary,
 }: ChatRoomProps) {
   const [supabase] = useState(() => createClient());
   const router = useRouter();
@@ -69,6 +77,15 @@ export function ChatRoom({
   const [isBlockedByMe, setIsBlockedByMe] = useState(initialIsBlockedByMe);
   const [blockPending, startBlockTransition] = useTransition();
   const [blockError, setBlockError] = useState<string | null>(null);
+
+  // Phase 6: メッセージ削除（FR-16）・非表示（FR-17）。
+  // 非表示は自分の画面にのみ影響するローカルなフィルタなのでRealtime購読は不要。
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(
+    () => new Set(initialHiddenMessageIds),
+  );
+  const [messageActionError, setMessageActionError] = useState<string | null>(
+    null,
+  );
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -93,7 +110,6 @@ export function ChatRoom({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "auto" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useLayoutEffect(() => {
@@ -144,6 +160,25 @@ export function ChatRoom({
           setMessages((prev) => {
             if (prev.some((m) => m.id === newMessage.id)) return prev;
             return [...prev, newMessage];
+          });
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "messages",
+          filter: `room_id=eq.${roomId}`,
+        },
+        (payload) => {
+          // FR-16: 相手が削除した（deleted_atが設定された）メッセージを自分の画面からも消す。
+          const updated = payload.new as MessageRow;
+          setMessages((prev) => {
+            if (updated.deleted_at) {
+              return prev.filter((m) => m.id !== updated.id);
+            }
+            return prev.map((m) => (m.id === updated.id ? updated : m));
           });
         },
       )
@@ -271,6 +306,30 @@ export function ChatRoom({
     clearSelectedImage();
   }
 
+  function handleDeleteMessage(messageId: string) {
+    setMessageActionError(null);
+    void (async () => {
+      const result = await deleteMessage(messageId);
+      if (!result.success) {
+        setMessageActionError(result.error);
+        return;
+      }
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    })();
+  }
+
+  function handleHideMessage(messageId: string) {
+    setMessageActionError(null);
+    void (async () => {
+      const result = await hideMessage(messageId);
+      if (!result.success) {
+        setMessageActionError(result.error);
+        return;
+      }
+      setHiddenIds((prev) => new Set(prev).add(messageId));
+    })();
+  }
+
   function handleToggleBlock() {
     setBlockError(null);
     const next = !isBlockedByMe;
@@ -327,6 +386,11 @@ export function ChatRoom({
         >
           {isBlockedByMe ? "ブロック解除" : "ブロック"}
         </button>
+        <ChatRoomOptionsMenu
+          roomId={roomId}
+          initialAuthRequired={initialAuthRequired}
+          isTemporary={isTemporary}
+        />
       </header>
       {blockError && (
         <p
@@ -334,6 +398,14 @@ export function ChatRoom({
           role="alert"
         >
           {blockError}
+        </p>
+      )}
+      {messageActionError && (
+        <p
+          className="border-b border-band/60 px-4 py-2 text-xs text-clay"
+          role="alert"
+        >
+          {messageActionError}
         </p>
       )}
 
@@ -355,13 +427,17 @@ export function ChatRoom({
         )}
 
         <div className="flex flex-col gap-2">
-          {messages.map((message) => (
-            <MessageBubble
-              key={message.id}
-              message={message}
-              isOwn={message.sender_id === currentUserId}
-            />
-          ))}
+          {messages
+            .filter((message) => !hiddenIds.has(message.id))
+            .map((message) => (
+              <MessageBubble
+                key={message.id}
+                message={message}
+                isOwn={message.sender_id === currentUserId}
+                onDelete={handleDeleteMessage}
+                onHide={handleHideMessage}
+              />
+            ))}
         </div>
 
         <div ref={bottomRef} />

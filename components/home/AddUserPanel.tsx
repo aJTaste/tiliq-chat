@@ -9,7 +9,11 @@ import {
   respondToFriendRequest,
   sendFriendRequest,
 } from "@/app/actions/friends";
-import { startDirectMessageWithUser } from "@/app/actions/rooms";
+import {
+  startDirectMessageWithUser,
+  startTemporaryDirectMessage,
+  type TempDmDurationOption,
+} from "@/app/actions/rooms";
 import { blockUser, unblockUser } from "@/app/actions/blocks";
 
 export type FriendRequestItem = {
@@ -38,6 +42,18 @@ type SearchResult = {
 
 const SEARCH_DEBOUNCE_MS = 300;
 
+type DurationSelection = "normal" | TempDmDurationOption;
+
+// FR-10/3.7: 新規DM作成時のみ有効期限を選べる（既存DMを一時チャット化する機能は対象外）。
+const DURATION_OPTIONS: { value: DurationSelection; label: string }[] = [
+  { value: "normal", label: "通常のDM" },
+  { value: "10m", label: "10分" },
+  { value: "1h", label: "1時間" },
+  { value: "24h", label: "24時間" },
+  { value: "7d", label: "7日間" },
+  { value: "custom", label: "カスタム" },
+];
+
 /**
  * ユーザー追加UI（FR-15）。PC/スマホの配置差（サイドバー/ボトムバー）は
  * Phase 7のレイアウト仕上げまでの暫定として、開閉式パネルに統一している。
@@ -57,6 +73,12 @@ export function AddUserPanel({
   const [error, setError] = useState<string | null>(null);
   const [requests, setRequests] = useState(initialRequests);
   const [blockedUsers, setBlockedUsers] = useState(initialBlockedUsers);
+  const [durationByUser, setDurationByUser] = useState<
+    Record<string, DurationSelection>
+  >({});
+  const [customByUser, setCustomByUser] = useState<
+    Record<string, { amount: string; unit: "minutes" | "hours" | "days" }>
+  >({});
   const [pending, startTransition] = useTransition();
   const [supabase] = useState(() => createClient());
   const router = useRouter();
@@ -145,8 +167,31 @@ export function AddUserPanel({
       router.push(`/chat/${existingRoomId}`);
       return;
     }
+
+    const duration = durationByUser[userId] ?? "normal";
+
+    if (duration === "custom") {
+      const amount = Number(customByUser[userId]?.amount ?? "");
+      if (!Number.isFinite(amount) || amount <= 0) {
+        setError("有効期限を正しく入力してください。");
+        return;
+      }
+    }
+
     startTransition(async () => {
-      const result = await startDirectMessageWithUser(userId);
+      const result =
+        duration === "normal"
+          ? await startDirectMessageWithUser(userId)
+          : await startTemporaryDirectMessage(
+              userId,
+              duration,
+              duration === "custom"
+                ? {
+                    amount: Number(customByUser[userId]?.amount ?? "0"),
+                    unit: customByUser[userId]?.unit ?? "hours",
+                  }
+                : undefined,
+            );
       if (result?.error) {
         setError(result.error);
       }
@@ -265,7 +310,7 @@ export function AddUserPanel({
               {results.map((r) => (
                 <li
                   key={r.userId}
-                  className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
                 >
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-ink">
@@ -275,7 +320,68 @@ export function AddUserPanel({
                       @{r.username}
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                    {!r.existingRoomId && (
+                      <select
+                        value={durationByUser[r.userId] ?? "normal"}
+                        onChange={(e) =>
+                          setDurationByUser((prev) => ({
+                            ...prev,
+                            [r.userId]: e.target.value as DurationSelection,
+                          }))
+                        }
+                        aria-label="有効期限"
+                        className="rounded-lg border border-band bg-surface px-1.5 py-1 text-xs text-ink-muted"
+                      >
+                        {DURATION_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {!r.existingRoomId &&
+                      durationByUser[r.userId] === "custom" && (
+                        <span className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min={1}
+                            value={customByUser[r.userId]?.amount ?? ""}
+                            onChange={(e) =>
+                              setCustomByUser((prev) => ({
+                                ...prev,
+                                [r.userId]: {
+                                  amount: e.target.value,
+                                  unit: prev[r.userId]?.unit ?? "hours",
+                                },
+                              }))
+                            }
+                            aria-label="有効期限（数値）"
+                            className="w-14 rounded-lg border border-band bg-surface px-1.5 py-1 text-xs text-ink"
+                          />
+                          <select
+                            value={customByUser[r.userId]?.unit ?? "hours"}
+                            onChange={(e) =>
+                              setCustomByUser((prev) => ({
+                                ...prev,
+                                [r.userId]: {
+                                  amount: prev[r.userId]?.amount ?? "",
+                                  unit: e.target.value as
+                                    | "minutes"
+                                    | "hours"
+                                    | "days",
+                                },
+                              }))
+                            }
+                            aria-label="有効期限の単位"
+                            className="rounded-lg border border-band bg-surface px-1.5 py-1 text-xs text-ink-muted"
+                          >
+                            <option value="minutes">分</option>
+                            <option value="hours">時間</option>
+                            <option value="days">日</option>
+                          </select>
+                        </span>
+                      )}
                     {r.friendshipStatus === "accepted" ? (
                       <button
                         type="button"

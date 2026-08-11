@@ -1,16 +1,10 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { logout } from "@/app/actions/auth";
-import {
-  AddUserPanel,
-  type BlockedUserItem,
-  type FriendRequestItem,
-} from "@/components/home/AddUserPanel";
-import {
-  HomeTabs,
-  type ConversationItem,
-  type FriendshipStatus,
-} from "@/components/home/HomeTabs";
+import type { BlockedUserItem, FriendRequestItem } from "@/components/home/AddUserPanel";
+import type { ConversationItem, FriendshipStatus } from "@/components/home/HomeTabs";
+import { HomeContent } from "@/components/home/HomeContent";
 import { StrangerDmToggle } from "@/components/home/StrangerDmToggle";
 
 export default async function HomePage() {
@@ -23,47 +17,58 @@ export default async function HomePage() {
     redirect("/login");
   }
 
-  // Phase 3のfetchRoomList（N+1気味の複数クエリ）はget_conversation_list RPCへ置き換え済み
-  // （CLAUDE.md Phase 5持ち越し事項#4）。フレンド申請一覧・自分の設定・ブロック一覧と合わせて並列取得する。
-  const [
-    profileResult,
-    conversationsResult,
-    requestsResult,
-    settingsResult,
-    blocksResult,
-  ] = await Promise.all([
+  // profile・自分の設定は低感度（このアカウントの持ち主が誰かは、端末を覗いた時点で
+  // 既知の情報のため）なのでゲートの有無に関わらず常にサーバー側で取得する。
+  const [profileResult, settingsResult] = await Promise.all([
     supabase
       .from("profiles")
       .select("username, display_name")
       .eq("id", user.id)
       .single(),
-    supabase.rpc("get_conversation_list"),
-    supabase.rpc("get_friend_requests"),
     supabase
       .from("user_settings")
-      .select("dm_from_stranger_enabled")
+      .select("dm_from_stranger_enabled, auth_scope_launch")
       .eq("user_id", user.id)
       .single(),
-    supabase.from("blocks").select("blocked_id").eq("blocker_id", user.id),
   ]);
 
   const profile = profileResult.data;
+  const dmFromStrangerEnabled =
+    settingsResult.data?.dm_from_stranger_enabled ?? true;
+  const launchGateEnabled = settingsResult.data?.auth_scope_launch ?? false;
 
-  const conversations: ConversationItem[] = (
-    conversationsResult.data ?? []
-  ).map((row) => ({
-    roomId: row.room_id,
-    otherUserId: row.other_user_id,
-    otherUsername: row.other_username,
-    otherDisplayName: row.other_display_name,
-    otherAvatarUrl: row.other_avatar_url ?? null,
-    friendshipStatus: row.friendship_status as FriendshipStatus,
-    lastMessagePreview: row.last_message_preview ?? null,
-    lastMessageAt: row.last_message_at ?? null,
-  }));
+  // FR-20「起動時」の追加認証が有効な場合、会話一覧・フレンド申請・ブロック一覧
+  // （＝誰とやり取りしているかが分かる情報）はAuthGateで解錠されるまでサーバーから
+  // 取得しない（RSCペイロードへの解錠前データ混入を避けるため）。
+  // HomeContent側がgated=trueのときクライアントから取得し直す。
+  let conversations: ConversationItem[] = [];
+  let friendRequests: FriendRequestItem[] = [];
+  let blockedUsers: BlockedUserItem[] = [];
 
-  const friendRequests: FriendRequestItem[] = (requestsResult.data ?? []).map(
-    (row) => ({
+  if (!launchGateEnabled) {
+    // Phase 3のfetchRoomList（N+1気味の複数クエリ）はget_conversation_list RPCへ置き換え済み
+    // （CLAUDE.md Phase 5持ち越し事項#4）。フレンド申請一覧・ブロック一覧と合わせて並列取得する。
+    const [conversationsResult, requestsResult, blocksResult] =
+      await Promise.all([
+        supabase.rpc("get_conversation_list"),
+        supabase.rpc("get_friend_requests"),
+        supabase.from("blocks").select("blocked_id").eq("blocker_id", user.id),
+      ]);
+
+    conversations = (conversationsResult.data ?? []).map((row) => ({
+      roomId: row.room_id,
+      otherUserId: row.other_user_id,
+      otherUsername: row.other_username,
+      otherDisplayName: row.other_display_name,
+      otherAvatarUrl: row.other_avatar_url ?? null,
+      friendshipStatus: row.friendship_status as FriendshipStatus,
+      lastMessagePreview: row.last_message_preview ?? null,
+      lastMessageAt: row.last_message_at ?? null,
+      isTemporary: row.is_temporary ?? false,
+      expiresAt: row.expires_at ?? null,
+    }));
+
+    friendRequests = (requestsResult.data ?? []).map((row) => ({
       friendshipId: row.friendship_id,
       direction: row.direction as "received" | "sent",
       counterpartId: row.counterpart_id,
@@ -71,32 +76,27 @@ export default async function HomePage() {
       counterpartDisplayName: row.counterpart_display_name,
       status: row.status,
       isRead: row.is_read,
-    }),
-  );
+    }));
 
-  // ホーム画面・検索結果はどちらもブロック中のユーザーを除外するため、
-  // ブロック解除の唯一の導線になる。チャットルームのブロック解除ボタンは
-  // 相手が一覧・検索から消えた時点で到達不能になるため、ここが必須の導線。
-  const blockedIds = (blocksResult.data ?? []).map((b) => b.blocked_id);
+    // ホーム画面・検索結果はどちらもブロック中のユーザーを除外するため、
+    // ブロック解除の唯一の導線になる。チャットルームのブロック解除ボタンは
+    // 相手が一覧・検索から消えた時点で到達不能になるため、ここが必須の導線。
+    const blockedIds = (blocksResult.data ?? []).map((b) => b.blocked_id);
 
-  const blockedProfilesResult =
-    blockedIds.length > 0
-      ? await supabase
-          .from("profiles")
-          .select("id, username, display_name")
-          .in("id", blockedIds)
-      : null;
+    const blockedProfilesResult =
+      blockedIds.length > 0
+        ? await supabase
+            .from("profiles")
+            .select("id, username, display_name")
+            .in("id", blockedIds)
+        : null;
 
-  const blockedUsers: BlockedUserItem[] = (
-    blockedProfilesResult?.data ?? []
-  ).map((p) => ({
-    userId: p.id,
-    username: p.username,
-    displayName: p.display_name,
-  }));
-
-  const dmFromStrangerEnabled =
-    settingsResult.data?.dm_from_stranger_enabled ?? true;
+    blockedUsers = (blockedProfilesResult?.data ?? []).map((p) => ({
+      userId: p.id,
+      username: p.username,
+      displayName: p.display_name,
+    }));
+  }
 
   return (
     <main className="flex min-h-screen flex-col">
@@ -111,6 +111,12 @@ export default async function HomePage() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <StrangerDmToggle initialEnabled={dmFromStrangerEnabled} />
+          <Link
+            href="/settings"
+            className="rounded-lg border border-band px-3 py-1.5 text-sm text-ink-muted transition-colors hover:bg-surface-raised"
+          >
+            設定
+          </Link>
           <form action={logout}>
             <button
               type="submit"
@@ -122,12 +128,13 @@ export default async function HomePage() {
         </div>
       </header>
 
-      <AddUserPanel
-        initialRequests={friendRequests}
+      <HomeContent
+        userId={user.id}
+        gated={launchGateEnabled}
+        initialConversations={conversations}
+        initialFriendRequests={friendRequests}
         initialBlockedUsers={blockedUsers}
       />
-
-      <HomeTabs conversations={conversations} />
     </main>
   );
 }

@@ -106,8 +106,8 @@ CLOUDINARY_API_SECRET=
 | 3     | チャットのコア機能（Room・メッセージ送受信・Realtime・ページング）         | **完了** |
 | 4     | 画像送信（Cloudinary連携）                                                 | **完了** |
 | 5     | フレンド・ストレンジャー・ブロック                                         | **完了** |
-| 6     | 一時チャット・追加認証・非表示メッセージ                                   | 次はこれ |
-| 7     | 通知設定・PWA仕上げ・デプロイ                                              | 未着手   |
+| 6     | 一時チャット・追加認証・非表示メッセージ                                   | **完了** |
+| 7     | 通知設定・PWA仕上げ（デプロイは対象外）                                    | 次はこれ |
 
 ## Phase 1 の実装内容・詳細
 
@@ -319,6 +319,81 @@ SRS FR-11〜FR-13、FR-15、FR-22、FR-23 準拠。フレンド申請・フレ�
 - フレンド申請・ブロックにRealtime購読は付けていない（一覧はページ遷移・Server Action後の`router.refresh()`で更新される設計。バッジのリアルタイム更新が必要になったら`friendships`テーブルもRealtime購読対象に追加を検討）
 - `dm_from_stranger_enabled`トグルはホーム画面ヘッダーへの暫定配置。専用の設定画面はPhase 7で作る想定（アプリ設定画面・認証設定・通知設定と合わせて）
 
+## Phase 6 の実装内容・詳細
+
+SRS FR-10、FR-16〜FR-21、3.7（一時チャット）、3.8（追加認証）準拠。メッセージ削除・非表示、追加認証（PIN/キー）、一時チャットを実装。
+
+### 設計判断・学び（実装前の深掘りで確定した内容）
+
+- **「各チャットに鍵をかける」(FR-20) はアカウント単位の単一シークレット＋部屋ごとの個人用トグルで実装した。** `docs/srs.md`のデータモデルには`rooms.lock_type/lock_secret`という部屋単位の共有シークレットも定義されているが、①現行RLS（`rooms_update_owner`はDM作成者=ownerのみ更新可）ではDM相手が自分の意思で鍵をかけられない、②5回失敗ロックの追跡列が`rooms`側に無い、という実装上の矛盾があった。ユーザーに確認した結果、意図は「端末を他人に貸したときの覗き見防止。アカウントにつき1つのPIN/キーで、見たくないチャット（または全部）に自分のアカウントからのみ鍵をかける。相手には影響しない」という個人・端末防御の脅威モデルだったため、新設した`room_members.auth_required`（自分の行のみ）で「このチャットに認証を要求するか」をトグルし、シークレット自体は既存の`user_settings.auth_type/auth_secret`（1ユーザー1つ）を使い回す設計にした。**`rooms.lock_type/lock_secret`列は未使用のまま据え置いている。** `docs/srs.md`データモデルとの乖離が生じているため、本文更新の要否は次回判断
+- **`room_members.auth_required`の更新は専用RPC（`set_room_auth_required`）経由にした。** `room_members_update_owner`のRLSがowner限定のため、これを緩めて「自分の行なら誰でも更新可」にするとrole列も書き換え可能になってしまう（owner昇格などの拡大）。RLSは変更せず、SECURITY DEFINER関数内で「呼び出し者自身の行のauth_requiredのみ」に限定して更新する既存パターンを踏襲した
+- **削除バッチはpg_cron + SQL関数のみで実装（Edge Functions・Vercel Cronは不採用）。** `docs/srs.md:126`「無料プランでの運用を前提とする」に基づく判断。Vercel Cron Jobsは10分間隔・10分以内削除完了というSRS 3.7の要件を満たすには最低Vercel Proプランが必要（Hobbyは1日1回まで）なため、Supabase無料プランのままpg_cron拡張を有効化し、`cleanup_expired_temp_chats()`をDB内で10分毎に直接実行する方式にした。新しいデプロイ経路が増えない利点もある
+- **認証ゲート（起動時・各チャット・非表示一覧）はクライアント側`sessionStorage`でタブセッション単位の解錠状態を管理する。** 借りた端末での覗き見防止という脅威モデル（認証済みAPI呼び出しへの防御ではない）に対して相応の実装とした。DB側にセッション状態は持たない
+- **ゲートが有効な場合、Server Component（`app/home/page.tsx`・`app/chat/[roomId]/page.tsx`）は保護対象コンテンツ（会話一覧・相手のプロフィール・メッセージ本体）を事前取得しない設計にした。** sessionStorageはクライアントのみで分からないため、Server ComponentがAuthGateの解錠状態を待たずに無条件でデータをRSCペイロードに含めてしまうと、画面上はゲートで隠れていてもHTML/RSCペイロード自体には解錠前のデータが載ってしまう。これを避けるため、ゲートが有効な場合は`HomeContent`/`GatedChatRoomLoader`という新規Client Componentが、AuthGate解錠後に`lib/supabase/client.ts`経由でブラウザから直接データ取得する経路に分岐させている（ゲート無効時は従来通りServer Componentが事前取得する高速経路のまま）
+- **起動時ゲートは`/home`と`/chat/[roomId]`の2箇所に個別実装した。** これらを束ねる共有レイアウト（ルートグループ）が無いため、直接URLで`/chat/[roomId]`に来た場合もバイパスされないよう両方に`AuthGate`を置いている。将来ルートが増えた際は`app/(protected)/layout.tsx`のような統合を検討
+- **ロック解除フロー（5回失敗後）はアカウントのパスワードで再認証する方式にした。** `lib/supabase/admin.ts`のservice_roleクライアントを都度使い捨てで生成し`signInWithPassword`によりパスワードのみ検証する（`persistSession: false`のため既存のログインセッションには影響しない）。解除後はPIN/キーを覚えていない場合に備え、設定画面へのリンクを表示している
+- **ハッシュ化には`bcryptjs`を採用。** pure JSでNode.jsランタイムのServer Action内のみで完結し、Vercel無料プランと相性が良い
+- **PostgRESTの重要な落とし穴を発見：`revoke execute ... from public`だけではRPCへの`anon`（未認証）ロールからの直接実行を防げない。** Supabaseはスキーマのデフォルト権限（`ALTER DEFAULT PRIVILEGES`）により、新規作成した関数へ`anon`のEXECUTE権限を自動付与するため、`public`ロールからのrevokeとは別に`anon`へも明示的にrevokeする必要がある（`has_function_privilege('anon', ...)`で実測して発覚）。Phase 6で新規追加した認証系RPC（`record_auth_attempt`・`set_room_auth_required`・`create_temp_dm_room`・`cleanup_expired_temp_chats`）は`anon`から明示的にrevokeして対応済み。**この事象はPhase 1〜5の既存RPC（`block_user`・`get_or_create_dm_room`・`is_room_member`等）にも共通して存在することを確認済み**（各関数内で`auth.uid() is null`をチェックしているため実害は無いが、「authenticated限定」という意図とは一致していない）。Phase 6のスコープ外のため未対応。まとめて棚卸しする場合は別途対応を検討
+- **`get_conversation_list`の戻り値に`is_temporary`/`expires_at`を追加する際、`create or replace function`ではなく`drop function` → `create function`が必要だった。** Postgresは戻り値の列構成（`returns table`）を変更する`create or replace`を拒否するため
+- **実機テストで発覚：メッセージ削除（FR-16）を直接のテーブルUPDATE（`messages_update_own_delete_only`ポリシー経由）で実装したところ、常に「メッセージの削除に失敗しました。」となる不具合があった。** 原因はPostgreSQLのRLS仕様：UPDATE時、更新ポリシー自身の`WITH CHECK`（`sender_id = auth.uid()`）を満たしていても、PostgreSQLは**更新後の新しい行がSELECTポリシーからも見える状態であること**を暗黙的に要求する。`messages_select_member_not_deleted`は`deleted_at is null`を要求するため、「`deleted_at`を設定して見えなくする」という論理削除の目的そのものがこの暗黙チェックと構造的に衝突し、原理的に直接UPDATEでは実現できないことが判明した（`begin; set local role authenticated; set local request.jwt.claims ...; update ...; rollback;`で実際にシミュレートして再現・特定）。対応として新規RPC `delete_own_message`（SECURITY DEFINER）を追加し、関数内で明示的に`sender_id = auth.uid()`を確認する方式に変更した。**この種の「SELECTポリシーの条件を書き換えるUPDATE（ソフトデリート等）」は直接のテーブルUPDATEでは実現できないという制約は、今後同様のパターン（例：非表示化条件を追加する場合等）を実装する際にも当てはまるため、要注意。**
+
+### 追加ファイル
+
+- `app/actions/messages.ts` — `deleteMessage`（論理削除・FR-16）/ `hideMessage` / `unhideMessage`（FR-17/18）
+- `app/actions/auth-secret.ts` — `setAuthSecret` / `clearAuthSecret` / `verifyAuthSecret` / `unlockAuthWithPassword`（FR-19、3.8）
+- `components/auth/AuthGate.tsx` — 3スコープ（起動時・各チャット・非表示一覧）共通の認証ゲート
+- `app/settings/page.tsx` + `components/settings/AuthSettingsForm.tsx` — PIN/キー設定・起動時/非表示一覧スコープのトグル（CLAUDE.md「次にやること（Phase 6）」で予告していたチャット設定画面の土台）
+- `components/home/HomeContent.tsx` — 起動時ゲート有効時の会話一覧クライアント側取得経路
+- `components/chat/GatedChatRoomLoader.tsx` — 各チャットゲート有効時のメッセージ本体クライアント側取得経路
+- `app/chat/[roomId]/hidden/page.tsx` + `components/chat/HiddenMessagesList.tsx` — 非表示メッセージ一覧（FR-18）
+- `components/chat/ChatRoomOptionsMenu.tsx` — チャットオプションメニュー（非表示一覧への導線、各チャットの鍵トグル、一時チャットの「閉じる」）
+
+### 変更ファイル
+
+- `components/chat/ChatRoom.tsx` — RealtimeにUPDATE購読を追加（相手の削除が自分の画面にも反映される）、非表示IDでのフィルタ、削除/非表示ハンドラ、`ChatRoomOptionsMenu`を追加
+- `components/chat/MessageBubble.tsx` — 長押し（タッチ）/右クリック（PC）での削除・非表示メニューを追加
+- `app/home/page.tsx` / `app/chat/[roomId]/page.tsx` — 起動時ゲート・各チャットゲートの判定・分岐を追加
+- `app/actions/rooms.ts` — `toggleRoomAuthRequired` / `closeTempChat` / `startTemporaryDirectMessage`を追加
+- `app/actions/settings.ts` — `updateAuthScopeLaunch` / `updateAuthScopeHiddenList`を追加
+- `components/home/AddUserPanel.tsx` — 検索結果の「メッセージ」ボタンに有効期限セレクター（通常/10分/1時間/24時間/7日/カスタム）を追加
+- `components/home/HomeTabs.tsx` — 一時チャットの残り時間バッジを追加
+- `types/supabase.ts` — Supabase MCPの`generate_typescript_types`で再生成（Phase 6のRPC・列を反映）
+
+### DB変更（`docs/schema.sql`に追記済み。実際の適用はSupabase MCP `apply_migration`）
+
+| マイグレーション名                       | 内容                                                                                                    |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `phase6_auth_foundation`                  | `room_members.auth_required`列、`record_auth_attempt`/`set_room_auth_required` RPC                        |
+| `phase6_temp_chat_creation`               | `get_conversation_list`の戻り値拡張（`is_temporary`/`expires_at`）、`create_temp_dm_room` RPC              |
+| `phase6_temp_chat_cleanup_batch`          | pg_cron拡張有効化、`temp_chat_cleanup_log`テーブル、`cleanup_expired_temp_chats`関数、`cron.schedule`登録  |
+| `phase6_cleanup_revoke_anon`              | `cleanup_expired_temp_chats`から`anon`のEXECUTE権限を明示的に剥奪                                          |
+| `phase6_revoke_anon_from_new_rpcs`        | 上記3件の新規RPCから`anon`のEXECUTE権限を明示的に剥奪                                                      |
+| `phase6_delete_own_message_rpc`           | 実機テストで発覚した不具合の修正。`delete_own_message` RPCを新規追加し、`deleteMessage`アクションを直接UPDATEからRPC呼び出しに変更（詳細は上記「設計判断・学び」参照）|
+
+pg_cronジョブ`cleanup-temp-chats`は`*/10 * * * *`（10分毎）で登録済み・`active: true`を確認済み。
+
+### 動作確認してほしい項目（実機確認用チェックリスト）
+
+1. 自分のメッセージを長押し/右クリック→「削除」→送信者・相手どちらの画面からも消えること（相手側はRealtimeで反映）
+2. 相手のメッセージを長押し/右クリック→「非表示」→自分の画面のみ消え、相手には見えたままであること
+3. チャットオプション→「非表示メッセージ一覧」から復元できること。復元後チャット画面に再表示されること
+4. 設定画面（ホーム右上「設定」）でPINまたはキーを設定→「起動時」トグルON→タブを再読み込み→PIN入力画面が表示され、正しいPINで解錠できること
+5. PINを5回連続で間違える→ロック表示になること→「アカウントのパスワードで解除する」から実際のログインパスワードで解除できること
+6. チャットオプション→「このチャットに鍵をかける」ON→そのチャットだけ開く際にPIN入力が必要になること。**別アカウント（DM相手）側の画面には一切影響しないこと**を確認
+7. 設定画面で「非表示メッセージ一覧」スコープをON→非表示一覧を開く際にPIN入力が必要になること
+8. ユーザー追加パネルの検索結果から「10分」等の有効期限を選んでメッセージを開始→一時チャットとして作成され、ホーム一覧に残り時間バッジが表示されること
+9. 短い有効期限（10分等）でテスト用の一時チャットを作成し、10分経過後にpg_cronの実行（最大10分間隔）でルームが実際に削除されることを確認（Supabase側`cron.job_run_details`やテーブルの`select`で確認）
+10. チャットオプション→「チャットを閉じる」（一時チャットのみ表示）→自分側の`temp_chat_sessions.closed_at`が設定されること。双方が閉じた場合は次回のバッチ実行で削除されることを確認
+
+### 未対応・持ち越し事項（Phase 6時点）
+
+- `rooms.lock_type/lock_secret`は未使用のまま。`docs/srs.md`データモデルとの乖離があるため、SRS本文の更新要否を次回判断
+- Phase 1〜5の既存RPCに残る`anon`実行権限（上記「設計判断・学び」参照）はPhase 6のスコープ外のため未対応。まとめて棚卸しする場合は`/security-review`等での対応を検討
+- 起動時ゲートが`/home`・`/chat/[roomId]`の2箇所への個別実装になっている。ルートグループ化による統合はスコープ外
+- 既存DMを後から一時チャット化する機能は未実装（SRSに明記が無いため対象外とした）
+- グループチャットUI（FR-4）は引き続きPhase未割り当てのまま。`ChatRoomOptionsMenu`・`room_members.auth_required`等はグループチャットにも将来流用できる設計にしてある
+- `components/home/AddUserPanel.tsx`（Phase 5実装）に、新しいESLintルール（`react-hooks/set-state-in-effect`）由来の既存エラーが3件ある（Phase 6の変更とは無関係、今回は未対応）
+
 ## 検討中のアイデア・未確定のPhase割り当て
 
 以下はPhase 4完了後の会話で出た検討事項で、Phase 5完了時点でも状況は大きく変わっていない。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミングで扱いを決めること。
@@ -357,7 +432,7 @@ SRS FR-11〜FR-13、FR-15、FR-22、FR-23 準拠。フレンド申請・フレ�
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
 
-## ファイル構成（Phase 5時点）
+## ファイル構成（Phase 6時点）
 
 ```
 tiliq-chat/
@@ -371,14 +446,19 @@ tiliq-chat/
 │   │       └── sign/route.ts    # Cloudinary署名発行（Phase 4）
 │   ├── login/page.tsx           # ログイン画面（Phase 2）
 │   ├── signup/page.tsx          # サインアップ画面（Phase 2）
-│   ├── home/page.tsx            # チャット一覧画面（Phase 3。Phase 5でタブ+ユーザー追加パネルへ全面拡張）
-│   ├── chat/[roomId]/page.tsx   # チャット画面（Phase 3。Phase 5でブロック状態取得を追加）
+│   ├── settings/page.tsx        # 追加認証設定画面（Phase 6・新規）
+│   ├── home/page.tsx            # チャット一覧画面（Phase 3。Phase 5でタブ+ユーザー追加パネル、Phase 6で起動時ゲート分岐を追加）
+│   ├── chat/[roomId]/
+│   │   ├── page.tsx             # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得を追加）
+│   │   └── hidden/page.tsx      # 非表示メッセージ一覧（Phase 6・新規）
 │   └── actions/
 │       ├── auth.ts              # signup/login/logout Server Actions（Phase 2）
-│       ├── rooms.ts             # startDirectMessage系 Server Actions（Phase 3。Phase 5でuserId版を追加）
-│       ├── friends.ts           # フレンド申請系 Server Actions（Phase 5・新規）
-│       ├── blocks.ts            # ブロック系 Server Actions（Phase 5・新規）
-│       └── settings.ts          # dm_from_stranger_enabled更新（Phase 5・新規）
+│       ├── auth-secret.ts       # 追加認証（PIN/キー）設定・検証系 Server Actions（Phase 6・新規）
+│       ├── rooms.ts             # startDirectMessage系（Phase 3/5）+ toggleRoomAuthRequired/closeTempChat/startTemporaryDirectMessage（Phase 6）
+│       ├── friends.ts           # フレンド申請系 Server Actions（Phase 5）
+│       ├── blocks.ts            # ブロック系 Server Actions（Phase 5）
+│       ├── messages.ts          # deleteMessage/hideMessage/unhideMessage（Phase 6・新規）
+│       └── settings.ts          # dm_from_stranger_enabled（Phase 5）+ auth_scope_launch/hidden_list更新（Phase 6）
 ├── lib/
 │   ├── supabase/
 │   │   ├── client.ts            # ブラウザ用クライアント
@@ -392,21 +472,29 @@ tiliq-chat/
 │       └── compress.ts          # 送信前バリデーション・リサイズ（Phase 4）
 ├── components/
 │   ├── TiliquaMark.tsx          # ブランドロゴ
+│   ├── auth/
+│   │   └── AuthGate.tsx         # 追加認証の共通ゲート（Phase 6・新規）
+│   ├── settings/
+│   │   └── AuthSettingsForm.tsx # PIN/キー設定・スコープトグルフォーム（Phase 6・新規）
 │   ├── chat/
-│   │   ├── ChatRoom.tsx         # チャット画面本体・Realtime購読・画像添付・ブロックUI（Phase 3/4/5）
-│   │   └── MessageBubble.tsx    # メッセージ表示（Phase 3/4）
+│   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6）
+│   │   ├── MessageBubble.tsx        # メッセージ表示・長押し/右クリックメニュー（Phase 3/4/6）
+│   │   ├── ChatRoomOptionsMenu.tsx  # チャットオプションメニュー（Phase 6・新規）
+│   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規）
+│   │   └── HiddenMessagesList.tsx   # 非表示メッセージ一覧本体（Phase 6・新規）
 │   └── home/                    # Phase 5・新規ディレクトリ
-│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ
-│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック
+│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ・一時チャットバッジ（Phase 5/6）
+│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック・一時チャット期限選択（Phase 5/6）
+│       ├── HomeContent.tsx      # 起動時ゲート有効時のクライアント側取得（Phase 6・新規）
 │       └── StrangerDmToggle.tsx # FR-22トグル
 ├── types/
-│   └── supabase.ts              # Supabase生成型定義（Phase 3で導入、Phase 5で再生成）
+│   └── supabase.ts              # Supabase生成型定義（Phase 3で導入、Phase 5/6で再生成）
 ├── public/
 │   ├── manifest.webmanifest
 │   ├── icon-192.png / icon-512.png / icon-maskable-512.png / apple-touch-icon.png
 ├── docs/
 │   ├── srs.md                   # 要件定義（正）
-│   └── schema.sql               # DBスキーマ参照用ファイル（Phase 5のRPCを追記）
+│   └── schema.sql               # DBスキーマ参照用ファイル（Phase 6のRPC・列を追記）
 ├── proxy.ts                     # ルート保護・セッションリフレッシュ（Phase 2）
 ├── .env.example
 └── CLAUDE.md（このファイル）
@@ -414,12 +502,13 @@ tiliq-chat/
 
 （`components/chat/NewDmForm.tsx` はPhase 5で`AddUserPanel`に統合されたため削除済み。手元のリポジトリからも削除してください）
 
-## 次にやること（Phase 6）
+## 次にやること（Phase 7）
 
-一時チャット・追加認証・非表示メッセージ。SRS FR-16〜FR-21、3.7、3.8を参照。
+通知設定・PWA仕上げ。**デプロイは今回のスコープから意図的に外している。** 理由：まだ実装すべき機能が複数残っており、公開前にそれらを一通り実装してからデプロイ作業（Vercel本番環境設定等）に着手する方針にユーザーと合意した（他の未実装機能が出揃うタイミングで改めてPhase割り当てを行う）。詳細な実装計画は`/home/tiliq/.claude/plans/claude-md-phase-phase-6-plan-memoized-scone.md`に保存済み（ファイル名はPhase 6由来だが、中身はPhase 7前半＝通知設定・PWA仕上げの計画）。
 
-1. **一時チャット（FR-10、3.7）：** Room作成UIに有効期限選択（10分/1時間/24時間/7日/カスタム最大90日）を追加。`rooms.expires_at`は用意済み。削除処理はSupabase Edge Functions または pg_cronで定期実行（実行間隔最大10分、期限超過から最大10分以内に削除完了を保証）
-2. **追加認証（FR-19、FR-20、3.8）：** 認証PIN／認証キーの設定UI、割り当て設定（起動時・各チャット・非表示一覧）。`user_settings`の`auth_type`/`auth_secret`/`auth_scope_launch`/`auth_scope_hidden_list`/`auth_failed_attempts`/`auth_locked_until`はPhase 1で用意済み。5回連続失敗でロック（解除方法は実装時に決定、SRS 3.8）
-3. **メッセージ削除（FR-16）・非表示（FR-17、FR-18）：** `messages.deleted_at`・`message_hidden`テーブルは用意済み。RLS（`messages_update_own_delete_only`・`message_hidden_*`）も設定済みなので、UIと（非表示一覧確認時の）認証フローの実装が中心になる
-4. Phase 5で暫定配置した`StrangerDmToggle`を、Phase 6または7で作る予定のアプリ設定画面へ統合するか検討する
-5. チャット設定・オプション画面（SRS 3.2.1）自体がまだ存在しないため、Phase 6でその土台（認証割り当て・非表示メッセージ一覧を含む）を新設することになる見込み
+1. **通知設定：** `user_settings.push_notifications_enabled`は用意済みだが未配線。**トグルのみ実装する方針**（DB保存のオン/オフ切り替えのみ）。実際にブラウザへプッシュ通知を届ける仕組み（Service Worker経由の購読管理・VAPID鍵・送信トリガー）は今回スコープ外とし将来対応とすることをユーザーと合意済み。根拠：SRS FR-24「配置は実装時に決定」、3.4節「プッシュ通知はベストエフォート」、Future Extensions「プッシュ通知トグルの配置確定」
+2. **PWA仕上げ：** Phase 0で基盤は用意済み（`manifest.webmanifest`・アイコン一式）。オフラインバナー（Service Worker不要、`navigator.onLine`ベース）・インストール導線（`beforeinstallprompt`＋iOSフォールバック案内）・インストール可能性のための最小Service Worker（キャッシュ戦略なし）を追加する
+3. **`proxy.ts`の`matcher`修正が必須：** 現状`sw.js`が除外パターンに含まれておらず、未ログイン時に`/sw.js`取得がログイン画面へリダイレクトされてService Worker登録に失敗する。実装時に必ず`sw\.js`を除外パターンへ追加すること
+4. **`app/settings/page.tsx`の拡張：** Phase 6では追加認証設定のみの最小構成。`StrangerDmToggle`（現状ホーム画面ヘッダーに暫定配置）をこの画面へ統合し、新設する通知設定と並置する
+5. **持ち越し事項の棚卸し：** Phase 6セクション末尾の「未対応・持ち越し事項」（`rooms.lock_type/lock_secret`未使用、既存RPCの`anon`実行権限、`AddUserPanel.tsx`の既存ESLintエラー等）の対応要否を判断。今回もスコープ外
+6. **デプロイ（将来）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。他の未実装機能が出揃った段階で着手する

@@ -925,3 +925,378 @@ grant execute on function public.cancel_friend_request(uuid) to authenticated;
 grant execute on function public.remove_friend(uuid) to authenticated;
 grant execute on function public.mark_friend_requests_read() to authenticated;
 grant execute on function public.block_user(uuid) to authenticated;
+
+-- =============================================================================
+-- Phase 6: 追加認証の基盤（FR-19, FR-20, 3.8）
+-- 適用済み（Supabase MCP: apply_migration "phase6_auth_foundation"）。
+-- 認証はアカウントにつき1つの秘密（user_settings.auth_type/auth_secret）。
+-- 「各チャット」スコープは部屋ごとの個人用トグル（room_members.auth_required）として実装し、
+-- 相手の画面には一切影響しない（rooms.lock_type/lock_secretは本Phaseでは未使用のまま据え置く。
+-- 経緯はCLAUDE.md Phase 6の設計判断を参照）。
+-- ハッシュ化・検証（bcrypt比較）自体はアプリ側（Server Action, bcryptjs）で行い、
+-- ここではロック状態・失敗回数カウンタの更新、および自分のroom_members行の更新のみを扱う。
+-- =============================================================================
+
+alter table public.room_members
+  add column auth_required boolean not null default false;
+
+-- record_auth_attempt: 追加認証（PIN/キー）の検証結果を記録する。
+-- 成功時はカウンタ・ロックをクリア。失敗時はカウンタを+1し、5回到達でロック（15分）。
+create or replace function public.record_auth_attempt(p_success boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_self uuid := auth.uid();
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if p_success then
+    update public.user_settings
+    set auth_failed_attempts = 0, auth_locked_until = null
+    where user_id = v_self;
+  else
+    update public.user_settings
+    set auth_failed_attempts = auth_failed_attempts + 1,
+        auth_locked_until = case
+          when auth_failed_attempts + 1 >= 5 then now() + interval '15 minutes'
+          else auth_locked_until
+        end
+    where user_id = v_self;
+  end if;
+end;
+$$;
+
+-- set_room_auth_required: 部屋ごとの個人用ロックトグル（FR-20「各チャット」スコープ）。
+-- room_members_update_ownerのRLS（owner限定）は緩めず、
+-- 「自分自身の行のauth_requiredのみ」を更新できる専用RPCとして提供する。
+create or replace function public.set_room_auth_required(p_room_id uuid, p_required boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_self uuid := auth.uid();
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+  if not public.is_room_member(p_room_id) then
+    raise exception 'not a member of this room';
+  end if;
+
+  update public.room_members
+  set auth_required = p_required
+  where room_id = p_room_id and user_id = v_self;
+end;
+$$;
+
+revoke execute on function public.record_auth_attempt(boolean) from public;
+revoke execute on function public.set_room_auth_required(uuid, boolean) from public;
+
+grant execute on function public.record_auth_attempt(boolean) to authenticated;
+grant execute on function public.set_room_auth_required(uuid, boolean) to authenticated;
+
+-- =============================================================================
+-- Phase 6: 一時チャット作成（FR-10, 3.7前半）
+-- 適用済み（Supabase MCP: apply_migration "phase6_temp_chat_creation"）。
+-- get_conversation_listの戻り値にis_temporary/expires_atを追加（残り時間バッジ表示用）。
+-- 戻り値の列構成を変更するためcreate or replaceでは不可（Postgresが拒否する）ため、
+-- 一度dropしてから再作成している。
+-- create_temp_dm_room: 常に新規roomを作成する一時チャット専用RPC
+-- （get_or_create_dm_roomの既存DM検索・マージは行わない）。
+-- =============================================================================
+
+drop function public.get_conversation_list();
+
+create function public.get_conversation_list()
+returns table (
+  room_id uuid,
+  other_user_id uuid,
+  other_username text,
+  other_display_name text,
+  other_avatar_url text,
+  friendship_status text,
+  last_message_preview text,
+  last_message_at timestamptz,
+  is_temporary boolean,
+  expires_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  with my_rooms as (
+    select rm.room_id, r.is_temporary, r.expires_at
+    from public.room_members rm
+    join public.rooms r on r.id = rm.room_id
+    where rm.user_id = auth.uid() and r.is_group = false
+  ),
+  other as (
+    select rm.room_id, rm.user_id as other_user_id
+    from public.room_members rm
+    where rm.room_id in (select room_id from my_rooms)
+      and rm.user_id <> auth.uid()
+  ),
+  last_msg as (
+    select distinct on (m.room_id)
+      m.room_id, m.content, m.image_url, m.created_at
+    from public.messages m
+    where m.room_id in (select room_id from my_rooms)
+      and m.deleted_at is null
+    order by m.room_id, m.created_at desc
+  ),
+  fs as (
+    select
+      case when f.requester_id = auth.uid() then f.addressee_id else f.requester_id end as counterpart_id,
+      f.status,
+      f.requester_id
+    from public.friendships f
+    where f.requester_id = auth.uid() or f.addressee_id = auth.uid()
+  )
+  select
+    o.room_id,
+    o.other_user_id,
+    p.username,
+    p.display_name,
+    p.avatar_url,
+    coalesce(
+      case
+        when fs.status = 'accepted' then 'accepted'
+        when fs.status = 'pending' and fs.requester_id = auth.uid() then 'pending_sent'
+        when fs.status = 'pending' then 'pending_received'
+        when fs.status = 'rejected' then 'rejected'
+      end,
+      'none'
+    ) as friendship_status,
+    coalesce(lm.content, case when lm.image_url is not null then '📷 画像' else null end) as last_message_preview,
+    lm.created_at as last_message_at,
+    mr.is_temporary,
+    mr.expires_at
+  from other o
+  join public.profiles p on p.id = o.other_user_id
+  join my_rooms mr on mr.room_id = o.room_id
+  left join last_msg lm on lm.room_id = o.room_id
+  left join fs on fs.counterpart_id = o.other_user_id
+  where not public.is_blocked(auth.uid(), o.other_user_id)
+  order by lm.created_at desc nulls last
+$$;
+
+revoke execute on function public.get_conversation_list() from public;
+grant execute on function public.get_conversation_list() to authenticated;
+
+-- create_temp_dm_room: 一時チャット専用のDM開始RPC。既存DM検索・マージは行わず、
+-- 常に新規roomをis_temporary=true, expires_at=p_expires_atで作成する。
+-- ブロックチェック・自己DMチェック・ストレンジャーDMチェックはget_or_create_dm_roomから流用。
+create or replace function public.create_temp_dm_room(p_other_user_id uuid, p_expires_at timestamptz)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room_id uuid;
+  v_self uuid := auth.uid();
+  v_are_friends boolean;
+  v_target_allows_strangers boolean;
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if v_self = p_other_user_id then
+    raise exception 'cannot create DM room with self';
+  end if;
+
+  if p_expires_at is null or p_expires_at <= now() then
+    raise exception 'invalid expiration time';
+  end if;
+
+  if p_expires_at > now() + interval '90 days' then
+    raise exception 'expiration time too far in the future';
+  end if;
+
+  if not exists (select 1 from public.profiles where id = p_other_user_id) then
+    raise exception 'target user not found';
+  end if;
+
+  if public.is_blocked(v_self, p_other_user_id) then
+    raise exception 'cannot start DM: blocked';
+  end if;
+
+  select exists (
+    select 1 from public.friendships
+    where status = 'accepted'
+      and ((requester_id = v_self and addressee_id = p_other_user_id)
+        or (requester_id = p_other_user_id and addressee_id = v_self))
+  ) into v_are_friends;
+
+  if not v_are_friends then
+    select coalesce(dm_from_stranger_enabled, true) into v_target_allows_strangers
+    from public.user_settings
+    where user_id = p_other_user_id;
+
+    if not coalesce(v_target_allows_strangers, true) then
+      raise exception 'target user does not accept DMs from strangers';
+    end if;
+  end if;
+
+  insert into public.rooms (is_group, is_temporary, expires_at)
+  values (false, true, p_expires_at)
+  returning id into v_room_id;
+
+  insert into public.room_members (room_id, user_id, role)
+  values
+    (v_room_id, v_self, 'owner'),
+    (v_room_id, p_other_user_id, 'member');
+
+  return v_room_id;
+end;
+$$;
+
+revoke execute on function public.create_temp_dm_room(uuid, timestamptz) from public;
+grant execute on function public.create_temp_dm_room(uuid, timestamptz) to authenticated;
+
+-- 注意（apply_migration "phase6_revoke_anon_from_new_rpcs" で追加適用）：
+-- Supabaseはスキーマのデフォルト権限（ALTER DEFAULT PRIVILEGES）により、新規作成した関数へ
+-- anonロールのEXECUTE権限を自動付与するため、"revoke ... from public"だけでは
+-- anonからの直接RPC呼び出しを防げない（has_function_privilegeで実測確認済み）。
+-- record_auth_attempt / set_room_auth_required / create_temp_dm_room の3関数について、
+-- anonから明示的に剥奪する。
+-- なお、この事象はPhase 1〜5の既存RPC（block_user/get_or_create_dm_room/is_room_member等）
+-- にも共通して存在することを確認済み（各関数内でauth.uid() is nullをチェックしているため
+-- 実害は無いが、"authenticated限定"という意図とは一致していない）。Phase 6のスコープ外のため
+-- 未対応。まとめて棚卸しする場合は別途対応を検討。
+revoke execute on function public.record_auth_attempt(boolean) from anon;
+revoke execute on function public.set_room_auth_required(uuid, boolean) from anon;
+revoke execute on function public.create_temp_dm_room(uuid, timestamptz) from anon;
+
+-- =============================================================================
+-- Phase 6: 一時チャットの自動削除バッチ（FR-10, 3.7後半）
+-- 適用済み（Supabase MCP: apply_migration "phase6_temp_chat_cleanup_batch",
+-- "phase6_cleanup_revoke_anon"）。
+-- pg_cron + SQL関数のみで完結させる（Edge Functions/Vercel Cron不要）。
+-- 理由：SRS 2.5「無料プランでの運用を前提とする」。Vercel Cronは10分間隔・10分以内削除の
+-- 要件を満たすにはProプランが必要になるため、Supabase無料プランで完結するpg_cronを採用。
+-- =============================================================================
+
+create extension if not exists pg_cron;
+
+-- 失敗ログ記録用（SRS 3.7「削除処理失敗時は次回実行で再試行する。連続失敗はログに記録する」）。
+-- 通常運用時のノイズを避けるため、削除件数0件・エラー無しの実行はログに残さない
+-- （関数側でdeleted_room_count > 0またはerror_message is not nullの場合のみinsertする）。
+create table public.temp_chat_cleanup_log (
+  id uuid primary key default gen_random_uuid(),
+  run_at timestamptz not null default now(),
+  deleted_room_count integer not null default 0,
+  error_message text
+);
+
+-- アプリのPostgREST API経由では一切公開しない内部運用テーブル。
+-- RLSを有効化した上でポリシーを一切追加しない（authenticated/anonはデフォルト拒否）。
+alter table public.temp_chat_cleanup_log enable row level security;
+
+-- cleanup_expired_temp_chats: 期限切れ、または全メンバーがtemp_chat_sessions.closed_atを
+-- 設定済みの一時チャットroomを削除する。messages/room_members/temp_chat_sessionsは
+-- rooms.idへのon delete cascadeで連鎖削除される。room単位でエラーをcatchし、
+-- 1件の失敗が他の削除に波及しないようにする。
+create or replace function public.cleanup_expired_temp_chats()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room record;
+  v_deleted_count integer := 0;
+  v_error_message text;
+begin
+  for v_room in
+    select r.id
+    from public.rooms r
+    where r.is_temporary = true
+      and (
+        (r.expires_at is not null and r.expires_at < now())
+        or not exists (
+          select 1
+          from public.room_members rm
+          left join public.temp_chat_sessions tcs
+            on tcs.room_id = rm.room_id and tcs.user_id = rm.user_id
+          where rm.room_id = r.id
+            and tcs.closed_at is null
+        )
+      )
+  loop
+    begin
+      delete from public.rooms where id = v_room.id;
+      v_deleted_count := v_deleted_count + 1;
+    exception when others then
+      v_error_message := coalesce(v_error_message || '; ', '') || 'room ' || v_room.id || ': ' || sqlerrm;
+    end;
+  end loop;
+
+  if v_deleted_count > 0 or v_error_message is not null then
+    insert into public.temp_chat_cleanup_log (deleted_room_count, error_message)
+    values (v_deleted_count, v_error_message);
+  end if;
+end;
+$$;
+
+-- pg_cronからのみ実行される想定。authenticated/anon双方からEXECUTE権限を剥奪する
+-- （認証トリガー専用関数と同じ方針）。
+-- 注意：Supabaseはスキーマのデフォルト権限（ALTER DEFAULT PRIVILEGES）により新規関数へ
+-- anonのEXECUTEを自動付与するため、"revoke ... from public"だけでは不十分（advisorで検出）。
+-- anonへは明示的にrevokeする必要がある。
+revoke execute on function public.cleanup_expired_temp_chats() from public;
+revoke execute on function public.cleanup_expired_temp_chats() from authenticated;
+revoke execute on function public.cleanup_expired_temp_chats() from anon;
+
+select cron.schedule('cleanup-temp-chats', '*/10 * * * *', 'select public.cleanup_expired_temp_chats();');
+
+-- =============================================================================
+-- Phase 6 バグ修正: メッセージ削除（FR-16）をRPC経由に変更
+-- 適用済み（Supabase MCP: apply_migration "phase6_delete_own_message_rpc"）。
+-- 直接のテーブルUPDATE（messages_update_own_delete_onlyポリシー経由）は使わず、
+-- delete_own_message RPC（SECURITY DEFINER）経由にしている。理由：PostgreSQLのRLSは
+-- UPDATE時に「更新後の新しい行がSELECTポリシーからも見える状態であること」を暗黙的に
+-- 要求するため、messages_update_own_delete_onlyのWITH CHECK（sender_id = auth.uid()）自体は
+-- 満たしていても、messages_select_member_not_deletedポリシー（deleted_at is nullを要求）と
+-- 衝突し、常に"new row violates row-level security policy"で失敗することが実機検証で判明した
+-- （ロールバック付きSQLで再現・原因特定済み）。RPC内で明示的にsender_id = auth.uid()を
+-- 確認することでRLSと同等の保護を維持しつつ、SECURITY DEFINERによりこの制約を回避している。
+-- =============================================================================
+
+create or replace function public.delete_own_message(p_message_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_self uuid := auth.uid();
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  update public.messages
+  set deleted_at = now()
+  where id = p_message_id
+    and sender_id = v_self
+    and deleted_at is null;
+
+  if not found then
+    raise exception 'message not found or not deletable';
+  end if;
+end;
+$$;
+
+revoke execute on function public.delete_own_message(uuid) from public;
+revoke execute on function public.delete_own_message(uuid) from anon;
+grant execute on function public.delete_own_message(uuid) to authenticated;

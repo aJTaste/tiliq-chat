@@ -19,6 +19,8 @@ export type ConversationItem = {
   friendshipStatus: FriendshipStatus;
   lastMessagePreview: string | null;
   lastMessageAt: string | null;
+  isTemporary: boolean;
+  expiresAt: string | null;
 };
 
 const FRIENDSHIP_BADGE: Partial<Record<FriendshipStatus, string>> = {
@@ -46,6 +48,22 @@ function formatRelativeTime(iso: string | null): string {
   return date.toLocaleDateString("ja-JP", { month: "short", day: "numeric" });
 }
 
+// FR-10/3.7: 一時チャットの残り時間バッジ表示用
+function formatRemainingTime(expiresAt: string | null): string | null {
+  if (!expiresAt) return null;
+  const diffMs = new Date(expiresAt).getTime() - Date.now();
+  if (diffMs <= 0) return "期限切れ";
+
+  const diffMin = Math.ceil(diffMs / 60000);
+  if (diffMin < 60) return `残り${diffMin}分`;
+
+  const diffHour = Math.ceil(diffMin / 60);
+  if (diffHour < 24) return `残り${diffHour}時間`;
+
+  const diffDay = Math.ceil(diffHour / 24);
+  return `残り${diffDay}日`;
+}
+
 function ConversationRow({ item }: { item: ConversationItem }) {
   return (
     <Link
@@ -63,6 +81,11 @@ function ConversationRow({ item }: { item: ConversationItem }) {
           {item.friendshipStatus !== "accepted" && (
             <span className="shrink-0 rounded-full border border-band px-1.5 py-0.5 font-label text-[10px] text-ink-muted">
               {FRIENDSHIP_BADGE[item.friendshipStatus] ?? "未フレンド"}
+            </span>
+          )}
+          {item.isTemporary && (
+            <span className="shrink-0 rounded-full border border-clay/60 px-1.5 py-0.5 font-label text-[10px] text-clay">
+              {formatRemainingTime(item.expiresAt) ?? "一時チャット"}
             </span>
           )}
         </div>

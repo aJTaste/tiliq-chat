@@ -1,6 +1,8 @@
 import { redirect, notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ChatRoom } from "@/components/chat/ChatRoom";
+import { AuthGate } from "@/components/auth/AuthGate";
+import { GatedChatRoomLoader } from "@/components/chat/GatedChatRoomLoader";
 
 const PAGE_SIZE = 30;
 
@@ -22,12 +24,42 @@ export default async function ChatRoomPage({
 
   const { data: room } = await supabase
     .from("rooms")
-    .select("id, is_group")
+    .select("id, is_group, is_temporary")
     .eq("id", roomId)
     .maybeSingle();
 
   if (!room) {
     notFound();
+  }
+
+  // FR-20「各チャット」スコープ：自分がこの部屋に鍵をかけているか
+  // （room_members.auth_required、自分の行のみ。相手には影響しない個人設定）。
+  const { data: myMembership } = await supabase
+    .from("room_members")
+    .select("auth_required")
+    .eq("room_id", roomId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (!myMembership) {
+    notFound();
+  }
+
+  if (myMembership.auth_required) {
+    // ゲート有効時は相手のプロフィール・メッセージ本体をサーバー側で一切取得しない
+    // （RSCペイロードへの解錠前データ混入を避けるため）。解錠後にクライアントから取得する。
+    return (
+      <AuthGate
+        scopeKey={`room:${roomId}`}
+        title="このチャットには鍵がかかっています"
+      >
+        <GatedChatRoomLoader
+          roomId={roomId}
+          currentUserId={user.id}
+          isTemporary={room.is_temporary}
+        />
+      </AuthGate>
+    );
   }
 
   const { data: otherMember } = await supabase
@@ -71,6 +103,16 @@ export default async function ChatRoomPage({
   const initialMessages = [...(initialMessagesDesc ?? [])].reverse();
   const initialHasMore = (initialMessagesDesc?.length ?? 0) === PAGE_SIZE;
 
+  // FR-17: 自分がこのルームで非表示にしたメッセージのID一覧。ページングで古いメッセージを
+  // 読み込んだ場合もクライアント側でこの一覧を使ってフィルタするため、ルーム全体分を一括取得する。
+  const { data: hiddenRows } = await supabase
+    .from("message_hidden")
+    .select("message_id, messages!inner(room_id)")
+    .eq("user_id", user.id)
+    .eq("messages.room_id", roomId);
+
+  const initialHiddenMessageIds = (hiddenRows ?? []).map((row) => row.message_id);
+
   return (
     <ChatRoom
       roomId={roomId}
@@ -84,6 +126,9 @@ export default async function ChatRoomPage({
       initialMessages={initialMessages}
       initialHasMore={initialHasMore}
       initialIsBlockedByMe={!!myBlockOfOther}
+      initialHiddenMessageIds={initialHiddenMessageIds}
+      initialAuthRequired={myMembership.auth_required}
+      isTemporary={room.is_temporary}
     />
   );
 }

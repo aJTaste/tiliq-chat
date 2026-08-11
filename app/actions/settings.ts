@@ -36,3 +36,59 @@ export async function updateDmFromStrangerSetting(
   revalidatePath("/home");
   return { success: true };
 }
+
+/**
+ * FR-20: 追加認証を起動時にも要求するかのトグル。
+ */
+export async function updateAuthScopeLaunch(
+  enabled: boolean,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const { error } = await supabase
+    .from("user_settings")
+    .update({ auth_scope_launch: enabled })
+    .eq("user_id", user.id);
+
+  if (error) {
+    return { success: false, error: "設定の更新に失敗しました。" };
+  }
+
+  revalidatePath("/settings");
+  return { success: true };
+}
+
+/**
+ * FR-20: 追加認証を非表示メッセージ一覧の閲覧時にも要求するかのトグル。
+ */
+export async function updateAuthScopeHiddenList(
+  enabled: boolean,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const { error } = await supabase
+    .from("user_settings")
+    .update({ auth_scope_hidden_list: enabled })
+    .eq("user_id", user.id);
+
+  if (error) {
+    return { success: false, error: "設定の更新に失敗しました。" };
+  }
+
+  revalidatePath("/settings");
+  return { success: true };
+}
