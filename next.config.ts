@@ -11,6 +11,21 @@ const nextConfig: NextConfig = {
     ],
   },
   devIndicators: false,
+  async headers() {
+    return [
+      {
+        // Service Workerの更新が確実に反映されるよう、ブラウザ・中間キャッシュに
+        // 一切キャッシュさせない（Next.js公式PWAガイド「Securing your application」推奨）。
+        source: "/sw.js",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-cache, no-store, must-revalidate",
+          },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

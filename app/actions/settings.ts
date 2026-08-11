@@ -9,8 +9,7 @@ export type ActionResult =
 
 /**
  * FR-22: 知らない人からのDM受信設定のオン/オフ。
- * 専用の設定画面はPhase 7予定のため、暫定的にホーム画面ヘッダーのトグルから変更する
- * （CLAUDE.md「検討中のアイデア」参照）。
+ * Phase 7で専用の設定画面（/settings）に統合済み（NotificationSettingsForm）。
  */
 export async function updateDmFromStrangerSetting(
   enabled: boolean,
@@ -33,7 +32,37 @@ export async function updateDmFromStrangerSetting(
     return { success: false, error: "設定の更新に失敗しました。" };
   }
 
-  revalidatePath("/home");
+  revalidatePath("/settings");
+  return { success: true };
+}
+
+/**
+ * FR-24: プッシュ通知オン/オフ。
+ * 今回はDB保存のトグルのみ実装し、実際の配信（Service Worker経由の購読管理・
+ * VAPID鍵・送信トリガー）は将来対応とする（CLAUDE.md Phase 7参照）。
+ */
+export async function updatePushNotificationsEnabled(
+  enabled: boolean,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const { error } = await supabase
+    .from("user_settings")
+    .update({ push_notifications_enabled: enabled })
+    .eq("user_id", user.id);
+
+  if (error) {
+    return { success: false, error: "設定の更新に失敗しました。" };
+  }
+
+  revalidatePath("/settings");
   return { success: true };
 }
 

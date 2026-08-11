@@ -58,6 +58,6 @@ export async function proxy(request: NextRequest) {
 export const config = {
   matcher: [
     // 静的アセット・PWA関連ファイルはproxyの対象外
-    "/((?!_next/static|_next/image|favicon\\.ico|manifest\\.webmanifest|icon-.*\\.png|apple-touch-icon\\.png|.*\\.svg$).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|manifest\\.webmanifest|sw\\.js|icon-.*\\.png|apple-touch-icon\\.png|.*\\.svg$).*)",
   ],
 };

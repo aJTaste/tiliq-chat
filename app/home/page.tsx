@@ -5,7 +5,6 @@ import { logout } from "@/app/actions/auth";
 import type { BlockedUserItem, FriendRequestItem } from "@/components/home/AddUserPanel";
 import type { ConversationItem, FriendshipStatus } from "@/components/home/HomeTabs";
 import { HomeContent } from "@/components/home/HomeContent";
-import { StrangerDmToggle } from "@/components/home/StrangerDmToggle";
 
 export default async function HomePage() {
   const supabase = await createClient();
@@ -27,14 +26,12 @@ export default async function HomePage() {
       .single(),
     supabase
       .from("user_settings")
-      .select("dm_from_stranger_enabled, auth_scope_launch")
+      .select("auth_scope_launch")
       .eq("user_id", user.id)
       .single(),
   ]);
 
   const profile = profileResult.data;
-  const dmFromStrangerEnabled =
-    settingsResult.data?.dm_from_stranger_enabled ?? true;
   const launchGateEnabled = settingsResult.data?.auth_scope_launch ?? false;
 
   // FR-20「起動時」の追加認証が有効な場合、会話一覧・フレンド申請・ブロック一覧
@@ -110,7 +107,6 @@ export default async function HomePage() {
           </h1>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <StrangerDmToggle initialEnabled={dmFromStrangerEnabled} />
           <Link
             href="/settings"
             className="rounded-lg border border-band px-3 py-1.5 text-sm text-ink-muted transition-colors hover:bg-surface-raised"

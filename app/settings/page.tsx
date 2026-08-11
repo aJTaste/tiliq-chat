@@ -2,11 +2,13 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { AuthSettingsForm } from "@/components/settings/AuthSettingsForm";
+import { NotificationSettingsForm } from "@/components/settings/NotificationSettingsForm";
 
 /**
  * FR-19/FR-20/3.8: 追加認証（PIN／キー）の設定・スコープ割り当て。
- * CLAUDE.md「次にやること（Phase 6）」の通り、チャット設定・オプション画面の土台として
- * 最小構成で新設する（ストレンジャーDMトグル等の統合はPhase 7で検討）。
+ * FR-22/FR-24: DM受信設定・プッシュ通知設定（Phase 7でホーム画面ヘッダーの
+ * StrangerDmToggleから本画面へ統合）。
+ * SRS 3.2.1「アプリ設定画面（認証設定・通知設定・DM受信設定を含む）」準拠。
  */
 export default async function SettingsPage() {
   const supabase = await createClient();
@@ -20,7 +22,9 @@ export default async function SettingsPage() {
 
   const { data: settings } = await supabase
     .from("user_settings")
-    .select("auth_type, auth_scope_launch, auth_scope_hidden_list")
+    .select(
+      "auth_type, auth_scope_launch, auth_scope_hidden_list, dm_from_stranger_enabled, push_notifications_enabled",
+    )
     .eq("user_id", user.id)
     .single();
 
@@ -40,6 +44,15 @@ export default async function SettingsPage() {
         initialAuthType={(settings?.auth_type as "pin" | "key" | null) ?? null}
         initialScopeLaunch={settings?.auth_scope_launch ?? false}
         initialScopeHiddenList={settings?.auth_scope_hidden_list ?? false}
+      />
+
+      <NotificationSettingsForm
+        initialPushNotificationsEnabled={
+          settings?.push_notifications_enabled ?? true
+        }
+        initialDmFromStrangerEnabled={
+          settings?.dm_from_stranger_enabled ?? true
+        }
       />
     </main>
   );

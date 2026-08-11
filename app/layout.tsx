@@ -1,6 +1,9 @@
 import type { Metadata, Viewport } from "next";
 import { Space_Grotesk, Inter, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import { ServiceWorkerRegistrar } from "@/components/pwa/ServiceWorkerRegistrar";
+import { OfflineBanner } from "@/components/pwa/OfflineBanner";
+import { InstallPrompt } from "@/components/pwa/InstallPrompt";
 
 const spaceGrotesk = Space_Grotesk({
   variable: "--font-space-grotesk",
@@ -58,6 +61,9 @@ export default function RootLayout({
       className={`${spaceGrotesk.variable} ${inter.variable} ${plexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-surface text-ink">
+        <ServiceWorkerRegistrar />
+        <OfflineBanner />
+        <InstallPrompt />
         {children}
       </body>
     </html>
