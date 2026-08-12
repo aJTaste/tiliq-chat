@@ -1,10 +1,9 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { logout } from "@/app/actions/auth";
 import type { BlockedUserItem, FriendRequestItem } from "@/components/home/AddUserPanel";
 import type { ConversationItem, FriendshipStatus } from "@/components/home/HomeTabs";
 import { HomeContent } from "@/components/home/HomeContent";
+import { HomeHeader } from "@/components/home/HomeHeader";
 
 export default async function HomePage() {
   const supabase = await createClient();
@@ -16,48 +15,47 @@ export default async function HomePage() {
     redirect("/login");
   }
 
-  // profile・自分の設定は低感度（このアカウントの持ち主が誰かは、端末を覗いた時点で
-  // 既知の情報のため）なのでゲートの有無に関わらず常にサーバー側で取得する。
-  const [profileResult, settingsResult] = await Promise.all([
-    supabase
-      .from("profiles")
-      .select("username, display_name")
-      .eq("id", user.id)
-      .single(),
-    supabase
-      .from("user_settings")
-      .select("auth_scope_launch")
-      .eq("user_id", user.id)
-      .single(),
-  ]);
+  // FR-20「起動時」の追加認証：まずゲート要否だけを確認する。これは低感度な
+  // 設定値のため常に取得してよいが、ゲートが有効な場合は以降のプロフィール・
+  // 会話一覧・フレンド申請・ブロック一覧（＝「誰か」「誰とやり取りしているか」が
+  // 分かる情報）を一切取得しない（RSCペイロードへの解錠前データ混入を避けるため）。
+  const { data: settings } = await supabase
+    .from("user_settings")
+    .select("auth_scope_launch")
+    .eq("user_id", user.id)
+    .single();
 
-  const profile = profileResult.data;
-  const launchGateEnabled = settingsResult.data?.auth_scope_launch ?? false;
+  const launchGateEnabled = settings?.auth_scope_launch ?? false;
 
-  // FR-20「起動時」の追加認証が有効な場合、会話一覧・フレンド申請・ブロック一覧
-  // （＝誰とやり取りしているかが分かる情報）はAuthGateで解錠されるまでサーバーから
-  // 取得しない（RSCペイロードへの解錠前データ混入を避けるため）。
-  // HomeContent側がgated=trueのときクライアントから取得し直す。
+  let displayName = "";
   let conversations: ConversationItem[] = [];
   let friendRequests: FriendRequestItem[] = [];
   let blockedUsers: BlockedUserItem[] = [];
-  // Phase 8: 3クエリいずれかが失敗した場合、空状態と見分けが付かなくなることを防ぐため
+  // Phase 8: 各クエリいずれかが失敗した場合、空状態と見分けが付かなくなることを防ぐため
   // 明示的にエラーフラグを立ててHomeTabsまで伝播させる。
   let loadError = false;
 
   if (!launchGateEnabled) {
-    // Phase 3のfetchRoomList（N+1気味の複数クエリ）はget_conversation_list RPCへ置き換え済み
-    // （CLAUDE.md Phase 5持ち越し事項#4）。フレンド申請一覧・ブロック一覧と合わせて並列取得する。
-    const [conversationsResult, requestsResult, blocksResult] =
+    const [profileResult, conversationsResult, requestsResult, blocksResult] =
       await Promise.all([
+        supabase
+          .from("profiles")
+          .select("display_name")
+          .eq("id", user.id)
+          .single(),
         supabase.rpc("get_conversation_list"),
         supabase.rpc("get_friend_requests"),
         supabase.from("blocks").select("blocked_id").eq("blocker_id", user.id),
       ]);
 
     loadError = Boolean(
-      conversationsResult.error || requestsResult.error || blocksResult.error,
+      profileResult.error ||
+        conversationsResult.error ||
+        requestsResult.error ||
+        blocksResult.error,
     );
+
+    displayName = profileResult.data?.display_name ?? user.email ?? "Tiliqua";
 
     conversations = (conversationsResult.data ?? []).map((row) => ({
       roomId: row.room_id,
@@ -104,34 +102,31 @@ export default async function HomePage() {
     }));
   }
 
+  // Phase 16: ゲート有効時は、ヘッダー（ユーザー名表示・設定/ログアウトへの導線）を
+  // 含めロック中は何もレンダリングしない。理由は2点：①ユーザー名という「誰のアカウントか」
+  // が分かる情報を、解錠前の覗き見から守るため、②「設定」からゲート自体を無効化できて
+  // しまう（認証をバイパスする実質的な抜け道になる）ため。ヘッダーの描画自体を
+  // HomeContent→AuthGate解錠後のGatedHomeBodyへ委譲することで、AuthGate自身が
+  // ページの唯一のコンテンツになり、/chat/[roomId]と同じ box constraint（残り高さ
+  // いっぱい）になるため、縦位置も自然に揃う（副次効果）。
+  if (launchGateEnabled) {
+    return (
+      <main className="flex min-h-screen flex-col">
+        <HomeContent
+          userId={user.id}
+          gated={true}
+          initialConversations={[]}
+          initialFriendRequests={[]}
+          initialBlockedUsers={[]}
+          initialLoadError={false}
+        />
+      </main>
+    );
+  }
+
   return (
     <main className="flex min-h-screen flex-col">
-      <header className="flex items-center justify-between gap-3 border-b border-band/60 px-6 py-4">
-        <div className="min-w-0">
-          <p className="font-label text-xs uppercase tracking-[0.25em] text-ink-muted">
-            Tiliqua
-          </p>
-          <h1 className="truncate font-display text-lg font-semibold text-ink">
-            {profile?.display_name ?? user.email}
-          </h1>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Link
-            href="/settings"
-            className="rounded-lg border border-band px-3 py-1.5 text-sm text-ink-muted transition-colors hover:bg-surface-raised"
-          >
-            設定
-          </Link>
-          <form action={logout}>
-            <button
-              type="submit"
-              className="rounded-lg border border-band px-3 py-1.5 text-sm text-ink-muted transition-colors hover:bg-surface-raised"
-            >
-              ログアウト
-            </button>
-          </form>
-        </div>
-      </header>
+      <HomeHeader displayName={displayName} />
 
       {/*
         FR-15: ユーザー追加UIはPCではサイドバー・スマホではボトムバーに配置する
@@ -142,7 +137,7 @@ export default async function HomePage() {
       <div className="flex flex-1 flex-col md:flex-row">
         <HomeContent
           userId={user.id}
-          gated={launchGateEnabled}
+          gated={false}
           initialConversations={conversations}
           initialFriendRequests={friendRequests}
           initialBlockedUsers={blockedUsers}

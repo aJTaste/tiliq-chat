@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { AuthGate } from "@/components/auth/AuthGate";
+import { HomeHeader } from "@/components/home/HomeHeader";
 import {
   AddUserPanel,
   type BlockedUserItem,
@@ -16,6 +17,7 @@ import {
 } from "@/components/home/HomeTabs";
 
 type HomeData = {
+  displayName: string;
   conversations: ConversationItem[];
   friendRequests: FriendRequestItem[];
   blockedUsers: BlockedUserItem[];
@@ -24,9 +26,12 @@ type HomeData = {
 
 /**
  * FR-20「起動時」スコープが有効なアカウント専用の読み込み経路。
- * AuthGateで解錠されるまで、会話一覧・フレンド申請・ブロック一覧をRSCペイロードへ
- * 含めない（＝解錠前にサーバーから何も取得しない）ため、解錠後にブラウザから
- * 直接Supabaseを呼び出す。
+ * AuthGateで解錠されるまで、プロフィール（ユーザー名）・会話一覧・フレンド申請・
+ * ブロック一覧をRSCペイロードへ含めない（＝解錠前にサーバーから何も取得しない）ため、
+ * 解錠後にブラウザから直接Supabaseを呼び出す。ヘッダー（HomeHeader）の描画も
+ * ここに含めることで、ロック中は「誰のアカウントか」も「設定」への導線も一切
+ * 表示されないようにしている（Phase 16。app/home/page.tsxがゲート有効時は
+ * このコンポーネント以外を何も描画しないことと対になる設計）。
  */
 function GatedHomeBody({ userId }: { userId: string }) {
   const [data, setData] = useState<HomeData | null>(null);
@@ -41,8 +46,13 @@ function GatedHomeBody({ userId }: { userId: string }) {
     let cancelled = false;
 
     async function load() {
-      const [conversationsResult, requestsResult, blocksResult] =
+      const [profileResult, conversationsResult, requestsResult, blocksResult] =
         await Promise.all([
+          supabase
+            .from("profiles")
+            .select("display_name")
+            .eq("id", userId)
+            .single(),
           supabase.rpc("get_conversation_list"),
           supabase.rpc("get_friend_requests"),
           supabase
@@ -54,8 +64,13 @@ function GatedHomeBody({ userId }: { userId: string }) {
       // Phase 8: 空状態と見分けが付かなくなることを防ぐため、いずれかのクエリが
       // 失敗した場合はloadErrorを立ててHomeTabsまで伝播させる（非ゲート時と同じ対応）。
       let loadError = Boolean(
-        conversationsResult.error || requestsResult.error || blocksResult.error,
+        profileResult.error ||
+          conversationsResult.error ||
+          requestsResult.error ||
+          blocksResult.error,
       );
+
+      const displayName = profileResult.data?.display_name ?? "Tiliqua";
 
       const conversations: ConversationItem[] = (
         conversationsResult.data ?? []
@@ -104,7 +119,7 @@ function GatedHomeBody({ userId }: { userId: string }) {
       }));
 
       if (!cancelled) {
-        setData({ conversations, friendRequests, blockedUsers, loadError });
+        setData({ displayName, conversations, friendRequests, blockedUsers, loadError });
       }
     }
 
@@ -142,11 +157,14 @@ function GatedHomeBody({ userId }: { userId: string }) {
 
   return (
     <>
-      <AddUserPanel
-        initialRequests={data.friendRequests}
-        initialBlockedUsers={data.blockedUsers}
-      />
-      <HomeTabs conversations={data.conversations} loadError={data.loadError} />
+      <HomeHeader displayName={data.displayName} />
+      <div className="flex flex-1 flex-col md:flex-row">
+        <AddUserPanel
+          initialRequests={data.friendRequests}
+          initialBlockedUsers={data.blockedUsers}
+        />
+        <HomeTabs conversations={data.conversations} loadError={data.loadError} />
+      </div>
     </>
   );
 }

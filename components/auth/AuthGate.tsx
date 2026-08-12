@@ -104,10 +104,11 @@ export function AuthGate({
   return (
     <div className="flex min-h-[50vh] w-full flex-1 flex-col items-center">
       {/* Phase 16: justify-centerによる数学的な中央だと「気持ち下」に見えるという
-          実機フィードバックを受け、上下のスペーサーの比率を2:3にして心持ち上寄りに
+          実機フィードバックを受け、上下のスペーサーの比率を1:2にして上寄りに
           表示する（コンテンツを挟む2つの空divの伸び幅の比率で位置を決めるため、
-          画面の高さやコンテンツの高さが変わっても比率は保たれる）。 */}
-      <div aria-hidden="true" className="flex-[2]" />
+          画面の高さやコンテンツの高さが変わっても比率は保たれる。当初2:3で
+          対応したが「まだ下に見える」との追加フィードバックを受けさらに調整）。 */}
+      <div aria-hidden="true" className="flex-[1]" />
       <div className="flex w-full flex-col items-center gap-4 px-6 py-10 text-center">
         <p className="font-display text-lg font-semibold text-ink">
           {title ?? "認証が必要です"}
@@ -188,7 +189,7 @@ export function AuthGate({
           </p>
         )}
       </div>
-      <div aria-hidden="true" className="flex-[3]" />
+      <div aria-hidden="true" className="flex-[2]" />
     </div>
   );
 }
