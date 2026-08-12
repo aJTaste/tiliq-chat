@@ -368,7 +368,7 @@ export function AddUserPanel({
                     @{r.username}
                   </p>
                 </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                <div className="flex w-full flex-wrap items-center gap-1.5">
                   {!r.existingRoomId && (
                     <select
                       value={durationByUser[r.userId] ?? "normal"}
@@ -430,21 +430,15 @@ export function AddUserPanel({
                         </select>
                       </span>
                     )}
-                  {r.friendshipStatus === "accepted" ? (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleMessage(r.userId, r.existingRoomId)
-                      }
-                      disabled={pending}
-                      className="rounded-lg bg-tongue px-2.5 py-1 text-xs font-medium text-white disabled:opacity-60"
-                    >
-                      メッセージ
-                    </button>
-                  ) : r.friendshipStatus === "pending_sent" ? (
+                  {/* Phase 16: 「メッセージ」ボタンはフレンド状態に関わらず常に表示する。
+                      DM開始はフレンド関係を要求しないため（get_or_create_dm_room参照）、
+                      以前は申請中(pending_sent)の間だけボタンが「申請中」表示に置き換わって
+                      消えてしまっていた不具合を修正（申請中ラベルとメッセージボタンを併存させる）。 */}
+                  {r.friendshipStatus === "pending_sent" && (
                     <span className="text-xs text-ink-muted">申請中</span>
-                  ) : (
-                    <>
+                  )}
+                  {r.friendshipStatus !== "accepted" &&
+                    r.friendshipStatus !== "pending_sent" && (
                       <button
                         type="button"
                         onClick={() => handleAddFriend(r.userId)}
@@ -453,18 +447,15 @@ export function AddUserPanel({
                       >
                         フレンド申請
                       </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleMessage(r.userId, r.existingRoomId)
-                        }
-                        disabled={pending}
-                        className="rounded-lg bg-tongue px-2.5 py-1 text-xs font-medium text-white disabled:opacity-60"
-                      >
-                        メッセージ
-                      </button>
-                    </>
-                  )}
+                    )}
+                  <button
+                    type="button"
+                    onClick={() => handleMessage(r.userId, r.existingRoomId)}
+                    disabled={pending}
+                    className="rounded-lg bg-tongue px-2.5 py-1 text-xs font-medium text-white disabled:opacity-60"
+                  >
+                    メッセージ
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleBlock(r.userId)}

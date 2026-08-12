@@ -102,7 +102,7 @@ export function AuthGate({
   }
 
   return (
-    <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-6 py-10 text-center">
+    <div className="flex min-h-[50vh] w-full flex-col items-center justify-center gap-4 px-6 py-10 text-center">
       <p className="font-display text-lg font-semibold text-ink">
         {title ?? "認証が必要です"}
       </p>
