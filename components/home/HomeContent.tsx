@@ -18,6 +18,7 @@ type HomeData = {
   conversations: ConversationItem[];
   friendRequests: FriendRequestItem[];
   blockedUsers: BlockedUserItem[];
+  loadError: boolean;
 };
 
 /**
@@ -43,6 +44,12 @@ function GatedHomeBody({ userId }: { userId: string }) {
             .select("blocked_id")
             .eq("blocker_id", userId),
         ]);
+
+      // Phase 8: 空状態と見分けが付かなくなることを防ぐため、いずれかのクエリが
+      // 失敗した場合はloadErrorを立ててHomeTabsまで伝播させる（非ゲート時と同じ対応）。
+      let loadError = Boolean(
+        conversationsResult.error || requestsResult.error || blocksResult.error,
+      );
 
       const conversations: ConversationItem[] = (
         conversationsResult.data ?? []
@@ -80,6 +87,8 @@ function GatedHomeBody({ userId }: { userId: string }) {
               .in("id", blockedIds)
           : null;
 
+      if (blockedProfilesResult?.error) loadError = true;
+
       const blockedUsers: BlockedUserItem[] = (
         blockedProfilesResult?.data ?? []
       ).map((p) => ({
@@ -89,7 +98,7 @@ function GatedHomeBody({ userId }: { userId: string }) {
       }));
 
       if (!cancelled) {
-        setData({ conversations, friendRequests, blockedUsers });
+        setData({ conversations, friendRequests, blockedUsers, loadError });
       }
     }
 
@@ -109,7 +118,7 @@ function GatedHomeBody({ userId }: { userId: string }) {
         initialRequests={data.friendRequests}
         initialBlockedUsers={data.blockedUsers}
       />
-      <HomeTabs conversations={data.conversations} />
+      <HomeTabs conversations={data.conversations} loadError={data.loadError} />
     </>
   );
 }
@@ -120,12 +129,14 @@ export function HomeContent({
   initialConversations,
   initialFriendRequests,
   initialBlockedUsers,
+  initialLoadError,
 }: {
   userId: string;
   gated: boolean;
   initialConversations: ConversationItem[];
   initialFriendRequests: FriendRequestItem[];
   initialBlockedUsers: BlockedUserItem[];
+  initialLoadError: boolean;
 }) {
   if (!gated) {
     return (
@@ -134,7 +145,10 @@ export function HomeContent({
           initialRequests={initialFriendRequests}
           initialBlockedUsers={initialBlockedUsers}
         />
-        <HomeTabs conversations={initialConversations} />
+        <HomeTabs
+          conversations={initialConversations}
+          loadError={initialLoadError}
+        />
       </>
     );
   }

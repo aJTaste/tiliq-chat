@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/client";
 import type { Tables } from "@/types/supabase";
 import { unhideMessage } from "@/app/actions/messages";
 import { buildChatImageUrl } from "@/lib/cloudinary/url";
+import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 type MessageRow = Tables<"messages">;
 
@@ -100,19 +101,24 @@ export function HiddenMessagesList({
     setError(null);
     setPendingIds((prev) => new Set(prev).add(messageId));
     void (async () => {
-      const result = await unhideMessage(messageId);
-      setPendingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(messageId);
-        return next;
-      });
-      if (!result.success) {
-        setError(result.error);
-        return;
+      try {
+        const result = await unhideMessage(messageId);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        setItems((prev) =>
+          (prev ?? []).filter((item) => item.message.id !== messageId),
+        );
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
+      } finally {
+        setPendingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(messageId);
+          return next;
+        });
       }
-      setItems((prev) =>
-        (prev ?? []).filter((item) => item.message.id !== messageId),
-      );
     })();
   }
 
@@ -161,7 +167,7 @@ export function HiddenMessagesList({
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={buildChatImageUrl(item.message.image_url)}
-                  alt=""
+                  alt="非表示にした画像"
                   loading="lazy"
                   decoding="async"
                   className="mt-2 max-h-48 w-auto max-w-full rounded-lg"

@@ -41,8 +41,13 @@ export function MessageBubble({
         setMenuOpen(false);
       }
     }
+    // SRS 3.3: キーボード操作対応。Escapeでもメニューを閉じられるようにする。
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setMenuOpen(false);
+    }
     document.addEventListener("mousedown", handleOutside as EventListener);
     document.addEventListener("touchstart", handleOutside as EventListener);
+    document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener(
         "mousedown",
@@ -52,6 +57,7 @@ export function MessageBubble({
         "touchstart",
         handleOutside as EventListener,
       );
+      document.removeEventListener("keydown", handleKeyDown);
     };
   }, [menuOpen]);
 
@@ -79,8 +85,33 @@ export function MessageBubble({
   const hasMenu = Boolean(onDelete || onHide);
 
   return (
-    <div className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
+    <div className={`group flex ${isOwn ? "justify-end" : "justify-start"}`}>
       <div ref={wrapperRef} className="relative max-w-[75%]">
+        {hasMenu && (
+          // SRS 3.3: 長押し（タッチ）・右クリック（PC）に加え、キーボードでも操作メニューを
+          // 開けるようにする（ChatRoomOptionsMenu.tsxと同じ「実ボタン＋トグル」パターン）。
+          // 通常は非表示にし、ホバー・フォーカス時のみ表示する（マウス操作時にUIを煩雑にしないため）。
+          <button
+            type="button"
+            onClick={() => setMenuOpen((prev) => !prev)}
+            aria-label="メッセージの操作"
+            className={`absolute top-0 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-surface-raised text-ink-muted opacity-0 shadow transition-opacity group-hover:opacity-100 focus-visible:opacity-100 ${
+              isOwn ? "-left-7" : "-right-7"
+            }`}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="5" r="1.6" />
+              <circle cx="12" cy="12" r="1.6" />
+              <circle cx="12" cy="19" r="1.6" />
+            </svg>
+          </button>
+        )}
         <div
           onContextMenu={handleContextMenu}
           onTouchStart={hasMenu ? handleTouchStart : undefined}
@@ -101,7 +132,7 @@ export function MessageBubble({
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={buildChatImageUrl(message.image_url)}
-              alt=""
+              alt="送信された画像"
               loading="lazy"
               decoding="async"
               className="mt-1 max-h-64 w-auto max-w-full rounded-lg"

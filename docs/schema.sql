@@ -1300,3 +1300,46 @@ $$;
 revoke execute on function public.delete_own_message(uuid) from public;
 revoke execute on function public.delete_own_message(uuid) from anon;
 grant execute on function public.delete_own_message(uuid) to authenticated;
+
+-- =============================================================================
+-- Phase 8: pre-Phase 6 RPC関数のanon実行権限を棚卸しする
+-- 適用済み（Supabase MCP: apply_migration "phase8_revoke_anon_from_legacy_rpcs"）。
+-- Phase 6で判明した通り、"revoke execute ... from public"だけではSupabaseの
+-- デフォルト権限（ALTER DEFAULT PRIVILEGES）により自動付与されるanonロールの
+-- EXECUTE権限は剥奪できない。Phase 6では新規追加RPCのみanonから明示revokeしたが
+-- （phase6_revoke_anon_from_new_rpcs等）、Phase 1〜5の既存RPCは未対応のまま残っていた。
+-- あわせて、Phase 6でdrop function→create functionにより戻り値を拡張した
+-- get_conversation_list()も、当時のrevoke対象リストから漏れていたため今回まとめて対応する。
+-- 各関数は内部でauth.uid() is nullをチェックしているため実害はないが、
+-- "authenticated限定"という設計意図と一致させるための対応。
+-- 適用後、has_function_privilege('anon', ..., 'execute')が全関数でfalseになることを
+-- 実測確認済み。
+-- -----------------------------------------------------------------------------
+
+revoke execute on function public.is_room_member(uuid) from anon;
+revoke execute on function public.is_room_owner(uuid) from anon;
+revoke execute on function public.is_blocked(uuid, uuid) from anon;
+revoke execute on function public.handle_new_user() from anon;
+revoke execute on function public.get_or_create_dm_room(uuid) from anon;
+revoke execute on function public.get_conversation_list() from anon;
+revoke execute on function public.search_users(text) from anon;
+revoke execute on function public.get_friend_requests() from anon;
+revoke execute on function public.send_friend_request(uuid) from anon;
+revoke execute on function public.respond_to_friend_request(uuid, boolean) from anon;
+revoke execute on function public.cancel_friend_request(uuid) from anon;
+revoke execute on function public.remove_friend(uuid) from anon;
+revoke execute on function public.mark_friend_requests_read() from anon;
+revoke execute on function public.block_user(uuid) from anon;
+
+-- =============================================================================
+-- Phase 8（追加対応）: friendships・blocksをsupabase_realtimeパブリケーションに追加
+-- 適用済み（Supabase MCP: apply_migration "phase8_realtime_friendships_blocks"）。
+-- ユーザーから「フレンド申請/解除等が相手側でリロードしないと反映されない」と指摘があり、
+-- 無料プランでの負荷影響（postgres_changesは実際に配信されたメッセージ数に対して
+-- カウントされる方式で、パブリケーション追加自体は購読コードが無い限りほぼノーコスト）
+-- を検討のうえ対応。ただしアプリ側に該当テーブルを購読するコードはまだ無いため、
+-- 現時点ではパブリケーション追加のみで体感は変わらない（購読コードの追加は別途判断）。
+-- -----------------------------------------------------------------------------
+
+alter publication supabase_realtime add table public.friendships;
+alter publication supabase_realtime add table public.blocks;

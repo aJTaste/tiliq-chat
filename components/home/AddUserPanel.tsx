@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
   cancelFriendRequest,
@@ -15,6 +15,7 @@ import {
   type TempDmDurationOption,
 } from "@/app/actions/rooms";
 import { blockUser, unblockUser } from "@/app/actions/blocks";
+import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 export type FriendRequestItem = {
   friendshipId: string;
@@ -55,8 +56,11 @@ const DURATION_OPTIONS: { value: DurationSelection; label: string }[] = [
 ];
 
 /**
- * ユーザー追加UI（FR-15）。PC/スマホの配置差（サイドバー/ボトムバー）は
- * Phase 7のレイアウト仕上げまでの暫定として、開閉式パネルに統一している。
+ * ユーザー追加UI（FR-15）。PCではサイドバー・スマホではビューポート下部に固定した
+ * ボトムバーとして配置する（Phase 9。CSSメディアクエリのみで切り替え、JSでの
+ * ブレークポイント判定はしない。AuthGate.tsx/OfflineBanner.tsxが「SSR時はnull→
+ * マウント後に実値」という回避策を取っているのと同種のハイドレーション不一致リスクを
+ * 避けるため）。開閉状態自体は両ブレークポイント共通（初期値は折りたたみ）。
  * フレンド申請の送受信・承認・拒否・取り消し（FR-11）もここに集約する。
  */
 export function AddUserPanel({
@@ -91,16 +95,20 @@ export function AddUserPanel({
   const unreadCount = receivedPending.filter((r) => !r.isRead).length;
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRequests(initialRequests);
   }, [initialRequests]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBlockedUsers(initialBlockedUsers);
   }, [initialBlockedUsers]);
 
   useEffect(() => {
     if (!open || unreadCount === 0) return;
-    void markFriendRequestsRead();
+    // 既読化はバックグラウンド処理のため、通信エラー等で失敗してもUI上は無視する
+    // （未処理のPromise rejectionにならないようにcatchのみ行う）。
+    markFriendRequestsRead().catch(() => {});
   }, [open, unreadCount]);
 
   useEffect(() => {
@@ -108,6 +116,7 @@ export function AddUserPanel({
 
     const trimmed = query.trim();
     if (trimmed.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setResults([]);
       setSearching(false);
       return;
@@ -147,17 +156,23 @@ export function AddUserPanel({
   function handleAddFriend(userId: string) {
     setError(null);
     startTransition(async () => {
-      const result = await sendFriendRequest(userId);
-      if (!result.success) {
-        setError(result.error);
-        return;
+      try {
+        const result = await sendFriendRequest(userId);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        setResults((prev) =>
+          prev.map((r) =>
+            r.userId === userId
+              ? { ...r, friendshipStatus: "pending_sent" }
+              : r,
+          ),
+        );
+        router.refresh();
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
       }
-      setResults((prev) =>
-        prev.map((r) =>
-          r.userId === userId ? { ...r, friendshipStatus: "pending_sent" } : r,
-        ),
-      );
-      router.refresh();
     });
   }
 
@@ -179,21 +194,29 @@ export function AddUserPanel({
     }
 
     startTransition(async () => {
-      const result =
-        duration === "normal"
-          ? await startDirectMessageWithUser(userId)
-          : await startTemporaryDirectMessage(
-              userId,
-              duration,
-              duration === "custom"
-                ? {
-                    amount: Number(customByUser[userId]?.amount ?? "0"),
-                    unit: customByUser[userId]?.unit ?? "hours",
-                  }
-                : undefined,
-            );
-      if (result?.error) {
-        setError(result.error);
+      try {
+        const result =
+          duration === "normal"
+            ? await startDirectMessageWithUser(userId)
+            : await startTemporaryDirectMessage(
+                userId,
+                duration,
+                duration === "custom"
+                  ? {
+                      amount: Number(customByUser[userId]?.amount ?? "0"),
+                      unit: customByUser[userId]?.unit ?? "hours",
+                    }
+                  : undefined,
+              );
+        if (result?.error) {
+          setError(result.error);
+        }
+      } catch (err) {
+        // startDirectMessageWithUser/startTemporaryDirectMessageは成功時にredirect()を
+        // 呼ぶため、Next.jsの内部シグナル（digest付きエラー）をここで再送出してから、
+        // それ以外（オフライン等の真の通信エラー）だけを扱う。
+        unstable_rethrow(err);
+        setError(NETWORK_ERROR_MESSAGE);
       }
     });
   }
@@ -201,77 +224,93 @@ export function AddUserPanel({
   function handleBlock(userId: string) {
     setError(null);
     startTransition(async () => {
-      const result = await blockUser(userId);
-      if (!result.success) {
-        setError(result.error);
-        return;
+      try {
+        const result = await blockUser(userId);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        const blockedTarget = results.find((r) => r.userId === userId);
+        setResults((prev) => prev.filter((r) => r.userId !== userId));
+        setRequests((prev) =>
+          prev.filter(
+            (r) => r.direction !== "sent" || r.counterpartId !== userId,
+          ),
+        );
+        if (blockedTarget) {
+          setBlockedUsers((prev) => [
+            ...prev,
+            {
+              userId: blockedTarget.userId,
+              username: blockedTarget.username,
+              displayName: blockedTarget.displayName,
+            },
+          ]);
+        }
+        router.refresh();
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
       }
-      const blockedTarget = results.find((r) => r.userId === userId);
-      setResults((prev) => prev.filter((r) => r.userId !== userId));
-      setRequests((prev) =>
-        prev.filter(
-          (r) => r.direction !== "sent" || r.counterpartId !== userId,
-        ),
-      );
-      if (blockedTarget) {
-        setBlockedUsers((prev) => [
-          ...prev,
-          {
-            userId: blockedTarget.userId,
-            username: blockedTarget.username,
-            displayName: blockedTarget.displayName,
-          },
-        ]);
-      }
-      router.refresh();
     });
   }
 
   function handleUnblock(userId: string) {
     setError(null);
     startTransition(async () => {
-      const result = await unblockUser(userId);
-      if (!result.success) {
-        setError(result.error);
-        return;
+      try {
+        const result = await unblockUser(userId);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        setBlockedUsers((prev) => prev.filter((u) => u.userId !== userId));
+        router.refresh();
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
       }
-      setBlockedUsers((prev) => prev.filter((u) => u.userId !== userId));
-      router.refresh();
     });
   }
 
   function handleRespond(friendshipId: string, accept: boolean) {
     setError(null);
     startTransition(async () => {
-      const result = await respondToFriendRequest(friendshipId, accept);
-      if (!result.success) {
-        setError(result.error);
-        return;
+      try {
+        const result = await respondToFriendRequest(friendshipId, accept);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        setRequests((prev) =>
+          prev.filter((r) => r.friendshipId !== friendshipId),
+        );
+        router.refresh();
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
       }
-      setRequests((prev) =>
-        prev.filter((r) => r.friendshipId !== friendshipId),
-      );
-      router.refresh();
     });
   }
 
   function handleCancel(friendshipId: string) {
     setError(null);
     startTransition(async () => {
-      const result = await cancelFriendRequest(friendshipId);
-      if (!result.success) {
-        setError(result.error);
-        return;
+      try {
+        const result = await cancelFriendRequest(friendshipId);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        setRequests((prev) =>
+          prev.filter((r) => r.friendshipId !== friendshipId),
+        );
+        router.refresh();
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
       }
-      setRequests((prev) =>
-        prev.filter((r) => r.friendshipId !== friendshipId),
-      );
-      router.refresh();
     });
   }
 
   return (
-    <div className="border-b border-band/60">
+    <div className="fixed inset-x-0 bottom-0 z-20 border-t border-band/60 bg-surface md:static md:z-auto md:w-72 md:shrink-0 md:border-t-0 md:border-b-0 md:border-r md:border-band/60">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -288,12 +327,13 @@ export function AddUserPanel({
       </button>
 
       {open && (
-        <div className="flex flex-col gap-4 px-6 pb-5">
+        <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto px-6 pb-5 md:max-h-none">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="ユーザーIDで検索"
+            aria-label="ユーザーIDで検索"
             className="rounded-lg border border-band bg-surface-raised px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
           />
 
@@ -304,6 +344,12 @@ export function AddUserPanel({
           )}
 
           {searching && <p className="text-xs text-ink-muted">検索中...</p>}
+
+          {!searching && query.trim().length > 0 && results.length === 0 && (
+            <p className="text-xs text-ink-muted">
+              ユーザーが見つかりませんでした。
+            </p>
+          )}
 
           {results.length > 0 && (
             <ul className="flex flex-col gap-2">

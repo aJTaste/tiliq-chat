@@ -76,13 +76,22 @@ export function GatedChatRoomLoader({
         .eq("blocked_id", otherProfile.id)
         .maybeSingle();
 
-      const { data: initialMessagesDesc } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("room_id", roomId)
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false })
-        .limit(PAGE_SIZE);
+      const { data: initialMessagesDesc, error: messagesError } =
+        await supabase
+          .from("messages")
+          .select("*")
+          .eq("room_id", roomId)
+          .is("deleted_at", null)
+          .order("created_at", { ascending: false })
+          .limit(PAGE_SIZE);
+
+      // Phase 8: メッセージ取得自体が失敗した場合、空のチャットとして
+      // 表示してしまわないようotherProfile欠如時と同じエラー状態に合流させる
+      // （ブロック状態・非表示ID取得の失敗は既存の?? null/?? []フォールバックのまま許容する）。
+      if (messagesError) {
+        if (!cancelled) setState({ status: "error" });
+        return;
+      }
 
       const initialMessages = [...(initialMessagesDesc ?? [])].reverse();
       const initialHasMore = (initialMessagesDesc?.length ?? 0) === PAGE_SIZE;

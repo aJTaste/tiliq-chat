@@ -41,6 +41,9 @@ export default async function HomePage() {
   let conversations: ConversationItem[] = [];
   let friendRequests: FriendRequestItem[] = [];
   let blockedUsers: BlockedUserItem[] = [];
+  // Phase 8: 3クエリいずれかが失敗した場合、空状態と見分けが付かなくなることを防ぐため
+  // 明示的にエラーフラグを立ててHomeTabsまで伝播させる。
+  let loadError = false;
 
   if (!launchGateEnabled) {
     // Phase 3のfetchRoomList（N+1気味の複数クエリ）はget_conversation_list RPCへ置き換え済み
@@ -51,6 +54,10 @@ export default async function HomePage() {
         supabase.rpc("get_friend_requests"),
         supabase.from("blocks").select("blocked_id").eq("blocker_id", user.id),
       ]);
+
+    loadError = Boolean(
+      conversationsResult.error || requestsResult.error || blocksResult.error,
+    );
 
     conversations = (conversationsResult.data ?? []).map((row) => ({
       roomId: row.room_id,
@@ -88,6 +95,8 @@ export default async function HomePage() {
             .in("id", blockedIds)
         : null;
 
+    if (blockedProfilesResult?.error) loadError = true;
+
     blockedUsers = (blockedProfilesResult?.data ?? []).map((p) => ({
       userId: p.id,
       username: p.username,
@@ -124,13 +133,22 @@ export default async function HomePage() {
         </div>
       </header>
 
-      <HomeContent
-        userId={user.id}
-        gated={launchGateEnabled}
-        initialConversations={conversations}
-        initialFriendRequests={friendRequests}
-        initialBlockedUsers={blockedUsers}
-      />
+      {/*
+        FR-15: ユーザー追加UIはPCではサイドバー・スマホではボトムバーに配置する
+        （Phase 9）。レイアウトの責務はこのファイルに閉じ込め、HomeContent.tsx側は
+        データ取得の分岐という既存の役割のまま変更しない。AddUserPanel/HomeTabs自身が
+        各ブレークポイントに応じた自分の見た目（幅・固定位置）を持つ。
+      */}
+      <div className="flex flex-1 flex-col md:flex-row">
+        <HomeContent
+          userId={user.id}
+          gated={launchGateEnabled}
+          initialConversations={conversations}
+          initialFriendRequests={friendRequests}
+          initialBlockedUsers={blockedUsers}
+          initialLoadError={loadError}
+        />
+      </div>
     </main>
   );
 }

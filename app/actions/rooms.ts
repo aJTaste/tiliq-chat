@@ -20,63 +20,6 @@ function mapDmError(message: string): string {
   return "DMの開始に失敗しました。時間をおいて再度お試しください。";
 }
 
-/** ユーザーID（username）を入力してDMを開始する。フォーム経由で使用。 */
-export async function startDirectMessage(
-  _prevState: StartDmState,
-  formData: FormData,
-): Promise<StartDmState> {
-  const username = String(formData.get("username") ?? "").trim();
-
-  if (!username) {
-    return { error: "ユーザーIDを入力してください。" };
-  }
-
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirect("/login");
-  }
-
-  const { data: myProfile } = await supabase
-    .from("profiles")
-    .select("username")
-    .eq("id", user.id)
-    .single();
-
-  if (myProfile?.username === username) {
-    return { error: "自分自身とはDMを開始できません。" };
-  }
-
-  const { data: target } = await supabase
-    .from("profiles")
-    .select("id")
-    .eq("username", username)
-    .maybeSingle();
-
-  if (!target) {
-    return { error: "そのユーザーIDのユーザーが見つかりません。" };
-  }
-
-  const { data: roomId, error: rpcError } = await supabase.rpc(
-    "get_or_create_dm_room",
-    { p_other_user_id: target.id },
-  );
-
-  if (rpcError || !roomId) {
-    return {
-      error: rpcError
-        ? mapDmError(rpcError.message)
-        : "DMの開始に失敗しました。時間をおいて再度お試しください。",
-    };
-  }
-
-  redirect(`/chat/${roomId}`);
-}
-
 /**
  * FR-20「各チャット」スコープ：このチャットに自分の追加認証を要求するかのトグル。
  * set_room_auth_required RPCで自分自身のroom_members行のauth_requiredのみ更新する

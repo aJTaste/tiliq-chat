@@ -26,12 +26,40 @@ import {
 import { blockUser, unblockUser } from "@/app/actions/blocks";
 import { deleteMessage, hideMessage } from "@/app/actions/messages";
 import { ChatRoomOptionsMenu } from "./ChatRoomOptionsMenu";
+import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 type MessageRow = Tables<"messages">;
 
 const PAGE_SIZE = 30;
+const MESSAGE_MAX_LENGTH = 4000;
 
 type UploadStage = "idle" | "compressing" | "uploading";
+
+// 過去メッセージをページングして読む際、時刻のみでは日付の手がかりが無いため、
+// 日付が変わったタイミングで区切り行を挿入する（E-2）。
+function isSameDay(a: Date, b: Date) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function formatDateDividerLabel(iso: string) {
+  const date = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (isSameDay(date, today)) return "今日";
+  if (isSameDay(date, yesterday)) return "昨日";
+
+  return date.toLocaleDateString("ja-JP", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
 
 type ChatRoomProps = {
   roomId: string;
@@ -307,26 +335,37 @@ export function ChatRoom({
   }
 
   function handleDeleteMessage(messageId: string) {
+    if (!window.confirm("このメッセージを削除しますか？元に戻せません。")) {
+      return;
+    }
     setMessageActionError(null);
     void (async () => {
-      const result = await deleteMessage(messageId);
-      if (!result.success) {
-        setMessageActionError(result.error);
-        return;
+      try {
+        const result = await deleteMessage(messageId);
+        if (!result.success) {
+          setMessageActionError(result.error);
+          return;
+        }
+        setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      } catch {
+        setMessageActionError(NETWORK_ERROR_MESSAGE);
       }
-      setMessages((prev) => prev.filter((m) => m.id !== messageId));
     })();
   }
 
   function handleHideMessage(messageId: string) {
     setMessageActionError(null);
     void (async () => {
-      const result = await hideMessage(messageId);
-      if (!result.success) {
-        setMessageActionError(result.error);
-        return;
+      try {
+        const result = await hideMessage(messageId);
+        if (!result.success) {
+          setMessageActionError(result.error);
+          return;
+        }
+        setHiddenIds((prev) => new Set(prev).add(messageId));
+      } catch {
+        setMessageActionError(NETWORK_ERROR_MESSAGE);
       }
-      setHiddenIds((prev) => new Set(prev).add(messageId));
     })();
   }
 
@@ -334,16 +373,20 @@ export function ChatRoom({
     setBlockError(null);
     const next = !isBlockedByMe;
     startBlockTransition(async () => {
-      const result = next
-        ? await blockUser(otherUser.id)
-        : await unblockUser(otherUser.id);
+      try {
+        const result = next
+          ? await blockUser(otherUser.id)
+          : await unblockUser(otherUser.id);
 
-      if (!result.success) {
-        setBlockError(result.error);
-        return;
+        if (!result.success) {
+          setBlockError(result.error);
+          return;
+        }
+        setIsBlockedByMe(next);
+        router.refresh();
+      } catch {
+        setBlockError(NETWORK_ERROR_MESSAGE);
       }
-      setIsBlockedByMe(next);
-      router.refresh();
     });
   }
 
@@ -427,17 +470,47 @@ export function ChatRoom({
         )}
 
         <div className="flex flex-col gap-2">
-          {messages
-            .filter((message) => !hiddenIds.has(message.id))
-            .map((message) => (
-              <MessageBubble
-                key={message.id}
-                message={message}
-                isOwn={message.sender_id === currentUserId}
-                onDelete={handleDeleteMessage}
-                onHide={handleHideMessage}
-              />
-            ))}
+          {(() => {
+            const visibleMessages = messages.filter(
+              (message) => !hiddenIds.has(message.id),
+            );
+
+            if (visibleMessages.length === 0 && !hasMore) {
+              return (
+                <p className="px-2 py-8 text-center text-sm text-ink-muted">
+                  まだメッセージがありません。最初のメッセージを送ってみましょう。
+                </p>
+              );
+            }
+
+            return visibleMessages.map((message, index) => {
+              const previous = visibleMessages[index - 1];
+              const showDateDivider =
+                !previous ||
+                !isSameDay(
+                  new Date(previous.created_at),
+                  new Date(message.created_at),
+                );
+
+              return (
+                <div key={message.id}>
+                  {showDateDivider && (
+                    <div className="my-2 flex items-center justify-center">
+                      <span className="rounded-full bg-surface-raised px-3 py-1 font-label text-[10px] text-ink-muted">
+                        {formatDateDividerLabel(message.created_at)}
+                      </span>
+                    </div>
+                  )}
+                  <MessageBubble
+                    message={message}
+                    isOwn={message.sender_id === currentUserId}
+                    onDelete={handleDeleteMessage}
+                    onHide={handleHideMessage}
+                  />
+                </div>
+              );
+            });
+          })()}
         </div>
 
         <div ref={bottomRef} />
@@ -453,7 +526,7 @@ export function ChatRoom({
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={previewUrl}
-                alt=""
+                alt="選択した画像"
                 className="h-16 w-16 rounded-lg object-cover"
               />
               <button
@@ -461,7 +534,7 @@ export function ChatRoom({
                 onClick={clearSelectedImage}
                 disabled={sending}
                 aria-label="画像の添付を取り消す"
-                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-clay text-xs text-white disabled:opacity-60"
+                className="absolute -right-2 -top-2 flex h-7 w-7 items-center justify-center rounded-full bg-clay text-xs text-white disabled:opacity-60"
               >
                 ×
               </button>
@@ -512,6 +585,7 @@ export function ChatRoom({
             onKeyDown={handleKeyDown}
             rows={1}
             disabled={isBlockedByMe}
+            maxLength={MESSAGE_MAX_LENGTH}
             placeholder={
               isBlockedByMe ? "ブロック中は送信できません" : "メッセージを入力"
             }
@@ -522,7 +596,7 @@ export function ChatRoom({
             disabled={!canSend}
             className="rounded-lg bg-tongue px-4 py-2 font-medium text-white transition-opacity disabled:opacity-60"
           >
-            送信
+            {sending ? "送信中..." : "送信"}
           </button>
         </div>
       </form>

@@ -326,16 +326,28 @@ Room
 ├── is_group     : BOOLEAN NOT NULL DEFAULT false
 ├── is_temporary : BOOLEAN NOT NULL DEFAULT false
 ├── expires_at   : TIMESTAMPTZ（一時チャットの有効期限。NULLなら期限なし。最大90日）
-├── lock_type    : TEXT NOT NULL DEFAULT 'none'（'none' | 'pin' | 'key'）
-├── lock_secret  : TEXT（ハッシュ済み認証PIN／認証キー）
+├── lock_type    : TEXT NOT NULL DEFAULT 'none'（'none' | 'pin' | 'key'。※未使用。下記注記参照）
+├── lock_secret  : TEXT（ハッシュ済み認証PIN／認証キー。※未使用。下記注記参照）
 └── created_at   : TIMESTAMPTZ NOT NULL DEFAULT now()
 
+※ lock_type/lock_secretについて（Phase 6で判明）：
+「各チャットに鍵をかける」機能は、実装時にこの部屋単位の共有シークレットではなく、
+RoomMember.auth_required（自分の行のみのトグル）＋ User.auth_type/auth_secret
+（アカウントにつき1つの秘密）の組み合わせで実現した。理由は、①現行RLSではDM作成者
+（owner）以外が自分の意思で部屋の行を更新できない、②5回失敗ロックの追跡列が部屋側に
+無い、という実装上の制約に加え、実際の脅威モデルが「端末を他人に貸したときの覗き見防止
+（アカウントにつき1つのPIN/キーで、見たいチャットにだけ自分のアカウントからのみ鍵をかける。
+相手には影響しない）」という個人・端末単位の防御だったため。lock_type/lock_secret列は
+将来のグループ単位の共有ロック等の用途を見込んで削除はせず残しているが、現在の実装では
+参照されていない。
+
 RoomMember
-├── id        : UUID PRIMARY KEY DEFAULT gen_random_uuid()
-├── room_id   : UUID NOT NULL REFERENCES Room(id) ON DELETE CASCADE
-├── user_id   : UUID NOT NULL REFERENCES User(id) ON DELETE CASCADE
-├── role      : TEXT NOT NULL DEFAULT 'member'（'owner' | 'member'）
-├── joined_at : TIMESTAMPTZ NOT NULL DEFAULT now()
+├── id            : UUID PRIMARY KEY DEFAULT gen_random_uuid()
+├── room_id       : UUID NOT NULL REFERENCES Room(id) ON DELETE CASCADE
+├── user_id       : UUID NOT NULL REFERENCES User(id) ON DELETE CASCADE
+├── role          : TEXT NOT NULL DEFAULT 'member'（'owner' | 'member'）
+├── auth_required : BOOLEAN NOT NULL DEFAULT false（Phase 6追加。上記の「各チャット」鍵トグル。自分の行のみ）
+├── joined_at     : TIMESTAMPTZ NOT NULL DEFAULT now()
 └── UNIQUE(room_id, user_id)
 
 Message

@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { removeFriend } from "@/app/actions/friends";
+import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 export type FriendshipStatus =
   | "accepted"
@@ -64,39 +67,65 @@ function formatRemainingTime(expiresAt: string | null): string | null {
   return `残り${diffDay}日`;
 }
 
-function ConversationRow({ item }: { item: ConversationItem }) {
+function ConversationRow({
+  item,
+  onRemoveFriend,
+  removingUserId,
+}: {
+  item: ConversationItem;
+  onRemoveFriend: (userId: string, displayName: string) => void;
+  removingUserId: string | null;
+}) {
+  // Phase 8: フレンド解除ボタンを追加。行全体がLinkのため、Link内にbuttonを
+  // ネストしない（無効なHTML構造を避ける）よう、Linkとbuttonを兄弟要素として
+  // 横並びにしている。
   return (
-    <Link
-      href={`/chat/${item.roomId}`}
-      className="flex items-center gap-3 px-6 py-4 transition-colors hover:bg-surface-raised"
-    >
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
-        {item.otherDisplayName.slice(0, 1)}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <p className="truncate font-medium text-ink">
-            {item.otherDisplayName}
-          </p>
-          {item.friendshipStatus !== "accepted" && (
-            <span className="shrink-0 rounded-full border border-band px-1.5 py-0.5 font-label text-[10px] text-ink-muted">
-              {FRIENDSHIP_BADGE[item.friendshipStatus] ?? "未フレンド"}
-            </span>
-          )}
-          {item.isTemporary && (
-            <span className="shrink-0 rounded-full border border-clay/60 px-1.5 py-0.5 font-label text-[10px] text-clay">
-              {formatRemainingTime(item.expiresAt) ?? "一時チャット"}
-            </span>
-          )}
+    <div className="flex items-center">
+      <Link
+        href={`/chat/${item.roomId}`}
+        className="flex min-w-0 flex-1 items-center gap-3 px-6 py-4 transition-colors hover:bg-surface-raised"
+      >
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
+          {item.otherDisplayName.slice(0, 1)}
         </div>
-        <p className="truncate text-sm text-ink-muted">
-          {item.lastMessagePreview ?? "まだメッセージがありません"}
-        </p>
-      </div>
-      <span className="shrink-0 text-[10px] text-ink-muted">
-        {formatRelativeTime(item.lastMessageAt)}
-      </span>
-    </Link>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="truncate font-medium text-ink">
+              {item.otherDisplayName}
+            </p>
+            {item.friendshipStatus !== "accepted" && (
+              <span className="shrink-0 rounded-full border border-band px-1.5 py-0.5 font-label text-[10px] text-ink-muted">
+                {FRIENDSHIP_BADGE[item.friendshipStatus] ?? "未フレンド"}
+              </span>
+            )}
+            {item.isTemporary && (
+              <span className="shrink-0 rounded-full border border-clay/60 px-1.5 py-0.5 font-label text-[10px] text-clay">
+                {formatRemainingTime(item.expiresAt) ?? "一時チャット"}
+              </span>
+            )}
+          </div>
+          <p className="truncate text-sm text-ink-muted">
+            {item.lastMessagePreview ?? "まだメッセージがありません"}
+          </p>
+        </div>
+        <span className="shrink-0 text-[10px] text-ink-muted">
+          {formatRelativeTime(item.lastMessageAt)}
+        </span>
+      </Link>
+      {item.friendshipStatus === "accepted" && (
+        <button
+          type="button"
+          onClick={() =>
+            onRemoveFriend(item.otherUserId, item.otherDisplayName)
+          }
+          disabled={removingUserId === item.otherUserId}
+          aria-label={`${item.otherDisplayName}とのフレンドを解除`}
+          className="mr-4 shrink-0 rounded-lg border border-band px-2 py-1 font-label text-[10px] text-ink-muted transition-colors hover:bg-surface disabled:opacity-60"
+        >
+          解除
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -139,13 +168,25 @@ function TabButton({
  * ホーム画面の「フレンド／ストレンジャー／グループ」タブ（SRS 3.2.1）。
  * 「検索」タブはAddUserPanelがユーザー追加パネルとして兼ねているため統合し、
  * グループチャットUIはPhase未割り当て（CLAUDE.md参照）のためプレースホルダーとする。
+ *
+ * Phase 8: `app/actions/friends.ts`のremoveFriendはPhase 5から実装済みだったが
+ * 呼び出すUIが無かったため、フレンド行に「解除」ボタンを追加した。一覧の更新は
+ * AddUserPanel.tsxの他のハンドラと同じくrouter.refresh()で行う（このコンポーネント
+ * 自身はconversationsをローカルstateへ複製せず、親から渡されたpropsをそのまま使う設計の
+ * ため）。
  */
 export function HomeTabs({
   conversations,
+  loadError = false,
 }: {
   conversations: ConversationItem[];
+  loadError?: boolean;
 }) {
   const [tab, setTab] = useState<TabKey>("friends");
+  const [removingUserId, setRemovingUserId] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const router = useRouter();
 
   const friends = conversations.filter(
     (c) => c.friendshipStatus === "accepted",
@@ -157,8 +198,43 @@ export function HomeTabs({
   const items =
     tab === "friends" ? friends : tab === "strangers" ? strangers : [];
 
+  // FR-14: フレンド・ストレンジャー一覧内の検索（AddUserPanel.tsxの新規ユーザー追加検索＝
+  // FR-15とは別物）。会話履歴が無いグループメンバーを追加で検索対象にするオプションは、
+  // 複数人グループチャット自体が未実装のため今回は対象外（CLAUDE.md参照）。
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredItems =
+    normalizedQuery.length === 0
+      ? items
+      : items.filter(
+          (item) =>
+            item.otherDisplayName.toLowerCase().includes(normalizedQuery) ||
+            item.otherUsername.toLowerCase().includes(normalizedQuery),
+        );
+
+  function handleRemoveFriend(userId: string, displayName: string) {
+    if (!window.confirm(`${displayName}とのフレンドを解除しますか？`)) {
+      return;
+    }
+    setRemoveError(null);
+    setRemovingUserId(userId);
+    void (async () => {
+      try {
+        const result = await removeFriend(userId);
+        if (!result.success) {
+          setRemoveError(result.error);
+          return;
+        }
+        router.refresh();
+      } catch {
+        setRemoveError(NETWORK_ERROR_MESSAGE);
+      } finally {
+        setRemovingUserId(null);
+      }
+    })();
+  }
+
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex flex-1 flex-col md:min-w-0">
       <div className="flex border-b border-band/60 px-2">
         <TabButton
           label="フレンド"
@@ -180,8 +256,31 @@ export function HomeTabs({
         />
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        {tab === "group" ? (
+      {!loadError && tab !== "group" && (
+        <div className="px-6 py-2">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="フレンド・ストレンジャーを検索"
+            aria-label="フレンド・ストレンジャーを検索"
+            className="w-full rounded-lg border border-band bg-surface-raised px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+          />
+        </div>
+      )}
+
+      {removeError && (
+        <p className="px-6 py-2 text-xs text-clay" role="alert">
+          {removeError}
+        </p>
+      )}
+
+      <div className="flex-1 overflow-y-auto pb-14 md:pb-0">
+        {loadError ? (
+          <p className="px-6 py-8 text-center text-sm text-clay" role="alert">
+            読み込みに失敗しました。再読み込みしてください。
+          </p>
+        ) : tab === "group" ? (
           <p className="px-6 py-8 text-center text-sm text-ink-muted">
             グループチャットは準備中です。
           </p>
@@ -191,11 +290,19 @@ export function HomeTabs({
               ? "まだフレンドとの会話がありません。"
               : "まだストレンジャーとの会話がありません。"}
           </p>
+        ) : filteredItems.length === 0 ? (
+          <p className="px-6 py-8 text-center text-sm text-ink-muted">
+            検索条件に一致する会話がありません。
+          </p>
         ) : (
           <ul className="divide-y divide-band/60">
-            {items.map((item) => (
+            {filteredItems.map((item) => (
               <li key={item.roomId}>
-                <ConversationRow item={item} />
+                <ConversationRow
+                  item={item}
+                  onRemoveFriend={handleRemoveFriend}
+                  removingUserId={removingUserId}
+                />
               </li>
             ))}
           </ul>

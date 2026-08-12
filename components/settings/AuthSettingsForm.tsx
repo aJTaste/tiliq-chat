@@ -9,9 +9,16 @@ import {
   updateAuthScopeHiddenList,
   updateAuthScopeLaunch,
 } from "@/app/actions/settings";
+import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 type AuthType = "pin" | "key" | null;
 
+/**
+ * Phase 8: 全ハンドラの`await xxxAction(...)`をtry/catchで囲むよう修正した
+ * （従来はオフライン等でfetchがthrowすると未処理例外になっていた）。
+ * `toggleScopeLaunch`/`toggleScopeHiddenList`は、従来`{success:false}`分岐でも
+ * エラー表示が無くサイレントにロールバックするだけだったため、あわせてsetErrorを追加した。
+ */
 export function AuthSettingsForm({
   initialAuthType,
   initialScopeLaunch,
@@ -41,14 +48,18 @@ export function AuthSettingsForm({
     setMessage(null);
     setError(null);
     startTransition(async () => {
-      const result = await setAuthSecret(formType, value);
-      if (!result.success) {
-        setError(result.error);
-        return;
+      try {
+        const result = await setAuthSecret(formType, value);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        setAuthType(formType);
+        setValue("");
+        setMessage("追加認証を設定しました。");
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
       }
-      setAuthType(formType);
-      setValue("");
-      setMessage("追加認証を設定しました。");
     });
   }
 
@@ -56,31 +67,53 @@ export function AuthSettingsForm({
     setMessage(null);
     setError(null);
     startTransition(async () => {
-      const result = await clearAuthSecret();
-      if (!result.success) {
-        setError(result.error);
-        return;
+      try {
+        const result = await clearAuthSecret();
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        setAuthType(null);
+        setMessage("追加認証を解除しました。");
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
       }
-      setAuthType(null);
-      setMessage("追加認証を解除しました。");
     });
   }
 
   function toggleScopeLaunch() {
     const next = !scopeLaunch;
     setScopeLaunch(next);
+    setError(null);
     startScopeTransition(async () => {
-      const result = await updateAuthScopeLaunch(next);
-      if (!result.success) setScopeLaunch(!next);
+      try {
+        const result = await updateAuthScopeLaunch(next);
+        if (!result.success) {
+          setScopeLaunch(!next);
+          setError(result.error);
+        }
+      } catch {
+        setScopeLaunch(!next);
+        setError(NETWORK_ERROR_MESSAGE);
+      }
     });
   }
 
   function toggleScopeHiddenList() {
     const next = !scopeHiddenList;
     setScopeHiddenList(next);
+    setError(null);
     startScopeTransition(async () => {
-      const result = await updateAuthScopeHiddenList(next);
-      if (!result.success) setScopeHiddenList(!next);
+      try {
+        const result = await updateAuthScopeHiddenList(next);
+        if (!result.success) {
+          setScopeHiddenList(!next);
+          setError(result.error);
+        }
+      } catch {
+        setScopeHiddenList(!next);
+        setError(NETWORK_ERROR_MESSAGE);
+      }
     });
   }
 
@@ -125,6 +158,8 @@ export function AuthSettingsForm({
             type="password"
             value={value}
             onChange={(e) => setValue(e.target.value)}
+            inputMode={formType === "pin" ? "numeric" : undefined}
+            maxLength={formType === "pin" ? 8 : undefined}
             placeholder={
               formType === "pin" ? "例：1234" : "認証キーを入力"
             }

@@ -108,6 +108,8 @@ CLOUDINARY_API_SECRET=
 | 5     | フレンド・ストレンジャー・ブロック                                         | **完了** |
 | 6     | 一時チャット・追加認証・非表示メッセージ                                   | **完了** |
 | 7     | 通知設定・PWA仕上げ（デプロイは対象外）                                    | **完了** |
+| 8     | 地固め（バグ修正・技術的負債の解消・小粒UX修正）                           | **完了** |
+| 9     | SRS未実装の中規模項目（汎用エラー画面・チャット内検索・レスポンシブ配置・キーボードアクセシビリティ） | **完了** |
 
 ## Phase 1 の実装内容・詳細
 
@@ -452,6 +454,111 @@ SRS FR-24、3.2.1（アプリ設定画面・インストールプロンプト）
 - Phase 6から持ち越しの棚卸し事項（`rooms.lock_type/lock_secret`未使用、既存RPCの`anon`実行権限、`AddUserPanel.tsx`の既存ESLintエラー3件）は今回も未対応のまま
 - デプロイ（Vercel本番環境設定）は引き続きスコープ外。他の未実装機能（グループチャットUI等）が出揃ってから着手する方針は変更なし
 
+## Phase 8 の実装内容・詳細
+
+Phase 6・7で積み上がった「未対応・持ち越し事項」の棚卸しに着手。新機能追加ではなく、①オフライン時のServer Action呼び出しが未処理例外になるバグの修正、②`anon`ロールのRPC実行権限の棚卸し、③`AddUserPanel.tsx`の既存ESLintエラー3件の解消、④デッドコード削除、⑤UI・アクセシビリティ面の小粒修正、に集中した「地固め」フェーズ。実装に先立ち3つの調査エージェント（技術的負債の再検証／SRSと実装の突き合わせ／コード品質・UX粗探し）を並行実行し、既知の持ち越し事項が記録内容より実際には広範囲に及んでいたことを確認してから着手した。
+
+### 追加ファイル
+
+- `lib/errors.ts` — Server Action呼び出し失敗時の共通インラインエラーメッセージ（`NETWORK_ERROR_MESSAGE`）。7ファイルへのコピペによる文言ズレを防ぐため新設
+
+### 変更ファイル（オフライン時未処理例外の修正）
+
+`components/settings/NotificationSettingsForm.tsx` / `AuthSettingsForm.tsx`・`components/auth/AuthGate.tsx`・`components/home/AddUserPanel.tsx`・`components/chat/ChatRoom.tsx` / `ChatRoomOptionsMenu.tsx` / `HiddenMessagesList.tsx`（計7ファイル・22箇所）— `await xxxAction(...)`をすべてtry/catchで囲んだ。楽観的更新のある箇所（トグル系）はcatch節でロールバックし、`NETWORK_ERROR_MESSAGE`をエラー表示用stateにセットする形に統一。`AddUserPanel.tsx`の未読バッジ既読化（`markFriendRequestsRead`）のみ、UI表示不要なバックグラウンド処理のため`.catch(() => {})`に留めた。
+
+### 変更ファイル（その他）
+
+- `app/actions/rooms.ts` — デッドコードだった`startDirectMessage`（Phase 5で呼び出し元`NewDmForm.tsx`削除済み・以後未参照）を削除
+- `components/home/AddUserPanel.tsx` — ESLintエラー3件を`InstallPrompt.tsx`と同じパターン（各effect内で最初の同期setState呼び出しの直前にのみdisableコメント）で解消。検索0件時の表示・検索欄の`aria-label`も追加
+- `components/home/HomeTabs.tsx` — `app/actions/friends.ts`の`removeFriend`（Phase 5実装済みだが呼び出すUIが無かった）を使う「フレンド解除」ボタンを追加。会話一覧取得エラー時の表示（`loadError` prop）も追加
+- `components/chat/ChatRoom.tsx` — メッセージ0件時の空状態、送信ボタンの送信中表示、画像alt属性、画像取り消しボタンのタップ領域拡大、`<textarea>`の`maxLength={4000}`、日付区切り表示を追加
+- `components/chat/MessageBubble.tsx` — 画像`alt`属性を意味のある文言に変更
+- `components/chat/HiddenMessagesList.tsx` — 画像`alt`属性の修正
+- `components/chat/ChatRoomOptionsMenu.tsx` — 「チャットを閉じる」に確認ダイアログを追加
+- `components/settings/AuthSettingsForm.tsx` — PIN入力欄に`inputMode="numeric"`・`maxLength={8}`を追加
+- `app/page.tsx` — 「Phase 0・基盤構築中」のまま放置されていたフッター文言を更新し、`/login`・`/signup`への導線を追加
+- `app/home/page.tsx` / `components/home/HomeContent.tsx` — `get_conversation_list`/`get_friend_requests`/`blocks`取得の`.error`を確認し、失敗時に`loadError`を`HomeTabs`へ伝播するよう修正（従来は`.data ?? []`のみでエラーが空状態と区別できなかった）
+- `components/chat/GatedChatRoomLoader.tsx` — メッセージ取得の`.error`を確認し、失敗時は既存の`{status:"error"}`分岐に合流するよう修正
+- `.env.example` — 未使用の`NEXT_PUBLIC_APP_URL`を削除
+- `docs/srs.md` — `Room`データモデルの`lock_type`/`lock_secret`に、実際の設計（`room_members.auth_required`＋`user_settings.auth_type/auth_secret`）についての注記を追加。`RoomMember`モデルに`auth_required`列を追記
+
+### DB変更（`docs/schema.sql`に追記済み。実際の適用はSupabase MCP `apply_migration` "phase8_revoke_anon_from_legacy_rpcs"）
+
+Phase 1〜5の既存RPC 13関数 + Phase 6で戻り値拡張した`get_conversation_list()`（後述）の計14関数について、`anon`ロールから明示的にEXECUTE権限をrevoke。適用後、全関数で`has_function_privilege('anon', ..., 'execute')`が`false`になることを実測確認済み。
+
+### 設計判断・学び
+
+- **`unstable_rethrow`が必要なケースを実装前に発見。** `components/home/AddUserPanel.tsx`の`handleMessage`が呼ぶ`startDirectMessageWithUser`/`startTemporaryDirectMessage`（`app/actions/rooms.ts`）は成功時に`redirect()`を呼ぶが、Next.jsの`redirect()`は`digest`付きの特殊なエラーをthrowすることで遷移を実現する仕組みのため、素朴にtry/catchすると内部シグナルまで握りつぶし遷移が起きなくなる（サイレントな退行）。実装前に`node_modules/next/dist/docs/01-app/03-api-reference/04-functions/unstable_rethrow.md`を実際に確認し、catch節の先頭で`next/navigation`の`unstable_rethrow(err)`を呼んで内部シグナルを再送出してから、それ以外の例外だけをネットワークエラーとして扱う実装にした。22箇所中この1関数のみ特別対応が必要（他は全て`redirect()`を呼ばない`{success, error}`形式のみ）
+- **`get_conversation_list()`はPhase 6で戻り値拡張（`is_temporary`/`expires_at`追加）のため`drop function`→`create function`し直されており、当時のanon revoke対象リスト（`record_auth_attempt`等3関数）から漏れていたことが今回の調査で判明した。** Postgresの`drop`→`create`は新しいOIDの関数を作ることになり古いACLを引き継がないため、他の新規関数と同様にデフォルト権限でanonにEXECUTEが自動付与された状態のまま残っていた。「Phase 6で触った関数」であっても棚卸し漏れが起きうるという教訓として記録
+- **`AuthSettingsForm.tsx`の`toggleScopeLaunch`/`toggleScopeHiddenList`、`NotificationSettingsForm.tsx`の`togglePush`/`toggleDmFromStranger`は、try/catch追加以前から`{success:false}`分岐でも`setError`を呼んでおらずサイレントにロールバックするだけだった。** try/catch化のついでにこの4箇所にも`setError(result.error)`を追加し、他のハンドラと同じエラー表示に揃えた
+- **`HomeTabs.tsx`の`ConversationRow`はチャット遷移用の`<Link>`が行全体を覆う構造だったため、フレンド解除ボタンをLinkの兄弟要素として配置した。** Link内にbuttonをネストすると無効なHTML構造になるため。一覧の更新は`AddUserPanel.tsx`の他のハンドラと同じく`router.refresh()`で行う設計にした（`HomeTabs`側でconversationsをローカルstateへ複製していないため）
+- **今回の調査で発見した中規模〜大規模の項目（汎用エラー画面`error.tsx`、チャット内検索・フィルタFR-14、ユーザー追加UIのレスポンシブ配置FR-15、削除・非表示メニューのキーボード操作対応、依存パッケージのバージョン更新）はスコープ外とし、次のPhase候補として下記「次にやること」に記録した。** バグ修正・技術的負債の解消と同じセッションで新機能や依存関係更新まで一緒くたにしないという判断
+
+### 動作確認してほしい項目（実機確認用チェックリスト）
+
+1. ブラウザのDevToolsでオフラインに切り替えた状態で、設定画面の各トグル（通知・DM受信・追加認証スコープ）を操作し、エラー画面に落ちずインラインエラーメッセージが出ることを確認する
+2. オンラインに戻し、ユーザー追加パネルから新規DM開始（通常・一時チャット双方）が引き続き正しく`/chat/[roomId]`へ遷移することを確認する（`unstable_rethrow`の退行確認として最重要）
+3. メッセージ削除・チャットを閉じる操作で確認ダイアログが出ること、キャンセルすると何も起きないこと
+4. フレンドのホーム一覧から「解除」→ 双方の「フレンド」タブから消える（相手側は「ストレンジャー」タブに移る）ことを確認する
+5. 検索してヒットしないユーザーIDを入力し、「ユーザーが見つかりませんでした」等の表示が出ることを確認する
+6. メッセージが1件も無いチャットを開き、空状態メッセージが表示されることを確認する
+7. 過去メッセージを読み込んで日付をまたぐ会話で、日付区切り（「今日」「昨日」またはYYYY年M月D日）が表示されることを確認する
+8. `AddUserPanel.tsx`で`npx eslint`がエラー0件になっていることを確認する（`react-hooks/set-state-in-effect`3件の解消）
+
+### 未対応・持ち越し事項（Phase 8時点）
+
+- `rooms.lock_type`/`lock_secret`は列としては未使用のまま残置（`docs/srs.md`のみ実態に合わせて更新。スキーマ変更はユーザーとの合意により今回見送り）
+- 依存パッケージのバージョン更新（`next` 16.2.12→16.3.0、`react`/`react-dom` 19.2.4→19.2.8、`@supabase/supabase-js` 2.112.0→2.112.3等）は未対応。`@types/node`が`^20`のまま（技術スタック表のNode.js 22系と不一致）なのも未対応。今回の調査で判明したが、バグ修正と同じセッションで一緒くたにするのは避けた
+- SRS未実装の中規模項目（今回の調査で新たに発見・詳細は下記「次にやること」）：汎用エラー画面（`error.tsx`/`global-error.tsx`、SRS 3.4）、チャット内検索・フィルタ（FR-14。ユーザー追加検索とは別物）、ユーザー追加UIのPC/スマホレスポンシブ配置（FR-15）、メッセージ削除・非表示メニューのキーボード操作対応
+- SRS 3.2.3の統一エラーレスポンス形式（`{error:{code,message}}`）は、ほぼ全てのServer Actionが独自の`{success,error}`形式を返しており実質未準拠（`app/api/cloudinary/sign/route.ts`のみ準拠）。アーキテクチャ上の判断（Server ActionsはHTTPステータスを持たない）として記録のみ
+- グループチャットUI（FR-4）は引き続きPhase未割り当て。今回の調査で、`room_members`のRLS（`room_members_insert_self_or_owner`/`_delete_self_or_owner`）は既にメンバー追加・削除を許容する設計になっている一方、複数人ルーム作成RPC・メンバー追加/削除Server Action・`get_conversation_list`及び`app/chat/[roomId]/page.tsx`の「相手1人」前提の書き換えは未着手であることを確認した（スコープの精緻化のみ、実装はしていない）
+
+### 追加対応：Realtimeパブリケーションの棚卸し（Phase 8完了後）
+
+実機確認中にユーザーから「フレンド申請/解除・ブロックが相手側でリロードしないと反映されない」との指摘があり、`supabase_realtime`パブリケーションが`messages`のみ有効（Phase 5時点の意図的な設計。持ち越し事項参照）だったことを再確認した。無料プランでの負荷影響を検討した結果（`postgres_changes`は実際に配信されたメッセージ数に対してカウントされる方式のため、パブリケーションへの追加自体は購読コードが無い限りほぼノーコスト）、`friendships`・`blocks`の2テーブルを`supabase_realtime`パブリケーションに追加した（マイグレーション`phase8_realtime_friendships_blocks`、適用・`pg_publication_tables`での反映確認済み）。`room_members`/`rooms`/`message_hidden`/`user_settings`等は、現状どの画面もそれらの変更を購読する予定が無いため見送った。
+
+**注意：パブリケーション追加だけでは体感は変わらない。** アプリ側（`HomeContent.tsx`等）に`friendships`/`blocks`の変更を実際に購読する`postgres_changes`コードがまだ無いため、「相手の操作が自分の画面にリアルタイム反映される」という体験を実現するには別途購読コードの実装が必要（未対応。対応する場合は次回セッションでユーザーと相談）。
+
+## Phase 9 の実装内容・詳細
+
+Phase 8完了後の棚卸しで見つかった、SRSに明記されているが未実装だった4項目（次にやること候補1）をまとめて実装。新機能ではなく既存SRS要件への準拠を埋める作業で、グループチャットUIのような大規模機能には手を付けていない。
+
+### 追加ファイル
+
+- `app/error.tsx` — SRS 3.4の汎用エラー画面。ルートレイアウト配下（`/home`・`/chat/[roomId]`・`/settings`等）のレンダリング時例外を捕捉する
+- `app/global-error.tsx` — ルートレイアウト自体がクラッシュした場合のみ発火する最終防衛ライン。独自の`<html>`/`<body>`を持ち、`app/layout.tsx`と同じ3フォントを再宣言し`./globals.css`を直接importする
+- `app/not-found.tsx` — `app/chat/[roomId]/page.tsx`・`hidden/page.tsx`の`notFound()`呼び出しと、存在しないURL全般の両方をカバーするブランド準拠の404画面
+
+### 変更ファイル
+
+- `components/chat/MessageBubble.tsx` — SRS 3.3のキーボード操作対応。`ChatRoomOptionsMenu.tsx`と同じ「実ボタン＋トグル」パターンで、長押し・右クリックに加えキーボード（Tab到達→Enter/Spaceで開く）でも削除・非表示メニューを開けるようにした。ホバー・フォーカス時のみ表示（`group-hover`/`focus-visible`）。Escapeでメニューを閉じられるようにした
+- `components/home/HomeTabs.tsx` — FR-14（フレンド・ストレンジャー一覧内の検索）を追加。タブボタン直下に検索欄を新設し、`otherDisplayName`/`otherUsername`の部分一致でクライアント側フィルタする（新規RPC不要）。タブのカウント数は絞り込み前の値のまま維持。「検索条件に一致する会話がありません」を既存の空状態と別に用意した。あわせてFR-15対応で`md:min-w-0`と、モバイル版ボトムバー（後述）に隠れないよう一覧のスクロール領域に`pb-14 md:pb-0`を追加
+- `app/home/page.tsx` — FR-15対応。`<HomeContent>`を包む領域を`flex flex-col md:flex-row`にし、PCではサイドバー・スマホでは縦積みのレイアウトに切り替えられるようにした
+- `components/home/AddUserPanel.tsx` — FR-15対応。外枠コンテナをスマホでは`fixed inset-x-0 bottom-0`のボトムバー、PC（`md:`）では`md:static md:w-72`のサイドバーに変更。内部の検索・フレンド申請・ブロック一覧のマークアップ自体は変更していない
+
+### 設計判断・学び
+
+- **Next.js 16.2.12の`error.tsx`/`global-error.tsx`は`{ error, reset }`ではなく`{ error, unstable_retry }`を受け取る。** `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/error.md`を実際に確認して判明（`unstable_retry`はv16.2.0で追加、公式ドキュメントも`reset()`より`unstable_retry()`の使用を推奨している）。一般的なNext.js知識（`reset`ベース）のまま実装すると「再試行」ボタンが動作しない、という典型的なバージョン固有の落とし穴だった
+- **`global-error.tsx`はルートレイアウトの`<head>`・フォント・`globals.css`を自動継承しない。** 公式ドキュメントで明記されている仕様（「global-errorはグローバルスタイルを含まない」）。`app/layout.tsx`と同じ3フォント宣言＋`./globals.css`のimportを意図的に重複させることで、真の最終エラー画面でもブランドの見た目を保つようにした
+- **FR-15のレスポンシブ切り替えはCSSメディアクエリのみで実装し、JSでのブレークポイント判定は行っていない。** `AuthGate.tsx`/`OfflineBanner.tsx`が「SSR時はnull→マウント後に実値」という回避策を取っているのと同種のハイドレーション不一致リスクを、新たに持ち込まないための判断
+- **FR-15の`open`状態（開閉トグル）はPC・スマホで共通のまま変更していない（初期値は折りたたみ）。** SRSの要求は「配置」（サイドバー／ボトムバーという位置）であり「常時展開」までは明記されていないための簡略化。PCでもサイドバーが初期状態では折りたたまれて見える点は既知の挙動として記録する。見た目を確認後、「PCではデフォルト展開」に変更する余地がある
+- **FR-14の「オプションで同グループメンバーも追加可」は未実装のまま。** 複数人グループチャット自体が未実装（FR-4、Phase未割り当て）のため、会話履歴が無いグループメンバーを検索対象に追加するというオプション機能は実装できない。この点はSRS本文の書き換えは行わず（Phase 5の「検索タブ統合」判断と同様、本文とアプリの意図的な差分としてこのCLAUDE.mdにのみ記録する方針を踏襲）、実装が完了していない部分としてここに明記する
+
+### 動作確認してほしい項目（実機確認用チェックリスト）
+
+1. コンポーネント内で一時的に`throw new Error("test")`を仕込むなどして例外を起こし、`app/error.tsx`が表示され「再試行」ボタンでコンポーネントが再レンダリングされることを確認する（確認後は必ず削除する）
+2. 存在しない`roomId`で`/chat/xxxxx`にアクセスし、ブランドに沿った404画面が出ることを確認する
+3. 存在しないURL（例：`/foo`）にアクセスしても同じ404画面が出ることを確認する
+4. フレンド・ストレンジャー一覧の検索欄に入力し、一致する会話だけが表示されること。タブの人数表示が検索中も変わらないことを確認する
+5. デスクトップ幅・スマホ幅（DevToolsのレスポンシブモード、または実機）それぞれで`/home`を開き、ユーザー追加UIがサイドバー／ボトムバーとして正しく配置されることを確認する。スマホでボトムバー展開時に会話一覧の最後の行が隠れていないことを確認する
+6. キーボードのみ（マウス不使用）でメッセージ一覧をTab移動し、各メッセージの「メッセージの操作」ボタンにフォーカスできること、Enterでメニューが開き、Escapeで閉じられることを確認する
+
+### 未対応・持ち越し事項（Phase 9時点）
+
+- FR-14の「オプションで同グループメンバーも追加可」チェックボックスは、グループチャットUI（FR-4）実装後に対応する
+- FR-15の「PCでは常時展開」（今回はPC・スマホ共通のトグル開閉のまま）は、見た目を確認後の追加調整候補として残す
+- Phase 8で見つかった依存パッケージのバージョン更新・グループチャットUI・複数チャットレイアウト対応・テキスト送信自動リトライ・真の楽観的更新・フレンド申請/ブロックのRealtime購読コードは、いずれも今回のスコープ外のまま
+
 ## 検討中のアイデア・未確定のPhase割り当て
 
 以下はPhase 4完了後の会話で出た検討事項で、Phase 5完了時点でも状況は大きく変わっていない。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミングで扱いを決めること。
@@ -490,13 +597,16 @@ SRS FR-24、3.2.1（アプリ設定画面・インストールプロンプト）
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
 
-## ファイル構成（Phase 7時点）
+## ファイル構成（Phase 9時点）
 
 ```
 tiliq-chat/
 ├── app/
 │   ├── layout.tsx              # フォント・メタデータ・PWA設定・Service Worker登録/オフラインバナー/インストール導線（Phase 7）
-│   ├── page.tsx                 # アプリ紹介ページ（SRS 3.2.1）
+│   ├── page.tsx                 # アプリ紹介ページ（SRS 3.2.1。Phase 8でログイン/サインアップ導線を追加）
+│   ├── error.tsx                # 汎用エラー画面（SRS 3.4。Phase 9・新規）
+│   ├── global-error.tsx         # ルートレイアウトクラッシュ時の最終防衛ライン（Phase 9・新規）
+│   ├── not-found.tsx            # ブランド準拠の404画面（Phase 9・新規）
 │   ├── globals.css              # デザイントークン・Tailwind v4設定
 │   ├── favicon.ico
 │   ├── api/
@@ -505,15 +615,15 @@ tiliq-chat/
 │   ├── login/page.tsx           # ログイン画面（Phase 2）
 │   ├── signup/page.tsx          # サインアップ画面（Phase 2）
 │   ├── settings/page.tsx        # 追加認証・通知・DM受信設定画面（Phase 6。Phase 7で通知設定・DM受信設定を統合）
-│   ├── home/page.tsx            # チャット一覧画面（Phase 3。Phase 5でタブ+ユーザー追加パネル、Phase 6で起動時ゲート分岐、Phase 7でStrangerDmToggleを設定画面へ移設）
+│   ├── home/page.tsx            # チャット一覧画面（Phase 3。Phase 5でタブ+ユーザー追加パネル、Phase 6で起動時ゲート分岐、Phase 7でStrangerDmToggleを設定画面へ移設、Phase 8で取得エラー伝播、Phase 9でFR-15レスポンシブレイアウトの外枠を追加）
 │   ├── chat/[roomId]/
 │   │   ├── page.tsx             # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得を追加）
 │   │   └── hidden/page.tsx      # 非表示メッセージ一覧（Phase 6・新規）
 │   └── actions/
 │       ├── auth.ts              # signup/login/logout Server Actions（Phase 2）
 │       ├── auth-secret.ts       # 追加認証（PIN/キー）設定・検証系 Server Actions（Phase 6・新規）
-│       ├── rooms.ts             # startDirectMessage系（Phase 3/5）+ toggleRoomAuthRequired/closeTempChat/startTemporaryDirectMessage（Phase 6）
-│       ├── friends.ts           # フレンド申請系 Server Actions（Phase 5）
+│       ├── rooms.ts             # startDirectMessageWithUser（Phase 5）+ toggleRoomAuthRequired/closeTempChat/startTemporaryDirectMessage（Phase 6）（Phase 8でデッドコードのstartDirectMessageを削除）
+│       ├── friends.ts           # フレンド申請系 Server Actions（Phase 5。removeFriendはPhase 8でHomeTabs.tsxから呼び出し開始）
 │       ├── blocks.ts            # ブロック系 Server Actions（Phase 5）
 │       ├── messages.ts          # deleteMessage/hideMessage/unhideMessage（Phase 6・新規）
 │       └── settings.ts          # dm_from_stranger_enabled（Phase 5）+ auth_scope_launch/hidden_list更新（Phase 6）+ updatePushNotificationsEnabled（Phase 7）
@@ -526,29 +636,30 @@ tiliq-chat/
 │   │   ├── sign.ts              # 署名生成（サーバー専用）
 │   │   ├── upload.ts            # クライアント→Cloudinary直接アップロード
 │   │   └── url.ts               # 表示用URL変換ヘルパー
-│   └── images/
-│       └── compress.ts          # 送信前バリデーション・リサイズ（Phase 4）
+│   ├── images/
+│   │   └── compress.ts          # 送信前バリデーション・リサイズ（Phase 4）
+│   └── errors.ts                # Server Action呼び出し失敗時の共通エラーメッセージ（Phase 8・新規）
 ├── components/
 │   ├── TiliquaMark.tsx          # ブランドロゴ
 │   ├── auth/
-│   │   └── AuthGate.tsx         # 追加認証の共通ゲート（Phase 6・新規）
+│   │   └── AuthGate.tsx         # 追加認証の共通ゲート（Phase 6・新規。Phase 8でtry/catch化）
 │   ├── settings/
-│   │   ├── AuthSettingsForm.tsx        # PIN/キー設定・スコープトグルフォーム（Phase 6・新規）
-│   │   └── NotificationSettingsForm.tsx # 通知設定・DM受信設定フォーム（Phase 7・新規）
+│   │   ├── AuthSettingsForm.tsx        # PIN/キー設定・スコープトグルフォーム（Phase 6・新規。Phase 8でtry/catch化・PIN入力属性追加）
+│   │   └── NotificationSettingsForm.tsx # 通知設定・DM受信設定フォーム（Phase 7・新規。Phase 8でtry/catch化・エラー表示追加）
 │   ├── pwa/                     # Phase 7・新規ディレクトリ
 │   │   ├── ServiceWorkerRegistrar.tsx  # Service Worker登録（何も描画しない）
 │   │   ├── OfflineBanner.tsx           # SRS 3.4オフラインバナー
 │   │   └── InstallPrompt.tsx           # PWAインストール導線（beforeinstallprompt+iOSフォールバック）
 │   ├── chat/
-│   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6）
-│   │   ├── MessageBubble.tsx        # メッセージ表示・長押し/右クリックメニュー（Phase 3/4/6）
-│   │   ├── ChatRoomOptionsMenu.tsx  # チャットオプションメニュー（Phase 6・新規）
-│   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規）
-│   │   └── HiddenMessagesList.tsx   # 非表示メッセージ一覧本体（Phase 6・新規）
+│   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6。Phase 8でtry/catch化・空状態・日付区切り等のUX修正）
+│   │   ├── MessageBubble.tsx        # メッセージ表示・長押し/右クリックメニュー（Phase 3/4/6。Phase 8で画像alt修正、Phase 9でキーボード操作対応を追加）
+│   │   ├── ChatRoomOptionsMenu.tsx  # チャットオプションメニュー（Phase 6・新規。Phase 8でtry/catch化・確認ダイアログ追加）
+│   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規。Phase 8でメッセージ取得エラー処理を追加）
+│   │   └── HiddenMessagesList.tsx   # 非表示メッセージ一覧本体（Phase 6・新規。Phase 8でtry/catch化・画像alt修正）
 │   └── home/                    # Phase 5・新規ディレクトリ
-│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ・一時チャットバッジ（Phase 5/6）
-│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック・一時チャット期限選択（Phase 5/6）
-│       └── HomeContent.tsx      # 起動時ゲート有効時のクライアント側取得（Phase 6・新規）
+│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ・一時チャットバッジ（Phase 5/6。Phase 8でフレンド解除ボタン・取得エラー表示、Phase 9でFR-14検索フィルタ・レスポンシブレイアウト対応を追加）
+│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック・一時チャット期限選択（Phase 5/6。Phase 8でtry/catch化・ESLintエラー解消・検索0件表示、Phase 9でFR-15レスポンシブ配置（PCサイドバー/スマホボトムバー）を追加）
+│       └── HomeContent.tsx      # 起動時ゲート有効時のクライアント側取得（Phase 6・新規。Phase 8で取得エラー処理を追加）
 ├── types/
 │   └── supabase.ts              # Supabase生成型定義（Phase 3で導入、Phase 5/6で再生成）
 ├── public/
@@ -556,20 +667,22 @@ tiliq-chat/
 │   ├── icon-192.png / icon-512.png / icon-maskable-512.png / apple-touch-icon.png
 │   └── sw.js                    # 最小構成Service Worker（Phase 7・新規）
 ├── docs/
-│   ├── srs.md                   # 要件定義（正）
-│   └── schema.sql               # DBスキーマ参照用ファイル（Phase 6のRPC・列を追記）
+│   ├── srs.md                   # 要件定義（正。Phase 8でlock_type/lock_secret・auth_requiredの記載を実態に合わせて更新）
+│   └── schema.sql               # DBスキーマ参照用ファイル（Phase 6のRPC・列、Phase 8のanon revokeを追記）
 ├── proxy.ts                     # ルート保護・セッションリフレッシュ（Phase 2。Phase 7でmatcherにsw.js除外を追加）
 ├── next.config.ts               # 画像remotePatterns（Phase 4）+ sw.js用headers（Phase 7）
-├── .env.example
+├── .env.example                 # Phase 8で未使用のNEXT_PUBLIC_APP_URLを削除
 └── CLAUDE.md（このファイル）
 ```
 
-（`components/chat/NewDmForm.tsx`はPhase 5で`AddUserPanel`に統合されたため削除済み。`components/home/StrangerDmToggle.tsx`はPhase 7で`NotificationSettingsForm`に統合されたため削除済み）
+（`components/chat/NewDmForm.tsx`はPhase 5で`AddUserPanel`に統合されたため削除済み。`components/home/StrangerDmToggle.tsx`はPhase 7で`NotificationSettingsForm`に統合されたため削除済み。`app/actions/rooms.ts`の`startDirectMessage`関数はPhase 8でデッドコードとして削除済み）
 
-## 次にやること（Phase 8・未確定）
+## 次にやること（Phase 10・未確定）
 
-Phase 7（通知設定・PWA仕上げ）は完了し、実装内容は「Phase 7 の実装内容・詳細」セクションに記録済み。次のPhaseの内容はまだ確定していない。以下は候補（優先度未確定）。次回セッション開始時にユーザーと相談して決めること：
+Phase 9（SRS未実装の中規模項目：汎用エラー画面・チャット内検索・レスポンシブ配置・キーボードアクセシビリティ）は完了し、実装内容は「Phase 9 の実装内容・詳細」セクションに記録済み。次のPhaseの内容はまだ確定していない。以下は候補（優先度未確定）。次回セッション開始時にユーザーと相談して決めること：
 
-1. **持ち越し事項の棚卸し：** Phase 6・7で積み上がった「未対応・持ち越し事項」（`rooms.lock_type/lock_secret`未使用、既存RPCの`anon`実行権限、`AddUserPanel.tsx`の既存ESLintエラー3件、実際のプッシュ通知配信、**オフライン時のServer Action失敗が未処理例外になる不具合**＝「実機テストで見つかったバグ（Phase 7完了後・未修正）」参照）の対応要否をまとめて判断するタイミングとして良さそう
-2. **「検討中のアイデア・未確定のPhase割り当て」セクション記載の項目：** グループチャットUI（FR-4）、テキスト送信失敗時の自動リトライ（SRS 3.4）、真の楽観的更新、複数チャットレイアウト対応（LINE風/Discord風）。いずれもPhase未割り当てのまま
-3. **デプロイ（将来）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。他の未実装機能が出揃った段階で着手する方針は変更なし
+1. **Phase 9の持ち越し・簡略化事項の仕上げ：** FR-14の「同グループメンバーも検索対象に追加」チェックボックス（グループチャットUI実装後）、FR-15の「PCでは常時展開」への調整（現状はPC・スマホ共通のトグル開閉のまま）
+2. **フレンド申請/ブロックのRealtime購読コード：** `friendships`/`blocks`は`supabase_realtime`パブリケーションへの追加済み（Phase 8「追加対応」参照）。相手側の操作（申請・承認・拒否・ブロック等）を自分の画面にリアルタイム反映するには、`HomeContent.tsx`等への`postgres_changes`購読コードの実装が別途必要
+3. **依存パッケージのバージョン更新：** `next` 16.2.12→16.3.0、`react`/`react-dom` 19.2.4→19.2.8、`@supabase/supabase-js` 2.112.0→2.112.3等（`npm outdated`で確認済み、いずれも安全そうなパッチ/マイナー更新）。`@types/node`が`^20`のまま（技術スタック表のNode.js 22系と不一致）なのも合わせて確認する。AGENTS.mdの「このNext.jsフォークは通常と異なる破壊的変更を含みうる」を踏まえ、更新後は実物のドキュメント確認とビルド確認をセットで行うこと
+4. **「検討中のアイデア・未確定のPhase割り当て」セクション記載の項目：** グループチャットUI（FR-4）、テキスト送信失敗時の自動リトライ（SRS 3.4）、真の楽観的更新、複数チャットレイアウト対応（LINE風/Discord風）。いずれもPhase未割り当てのまま。グループチャットUIについては「Phase 8 の実装内容・詳細」の持ち越し事項に、現状DB/RLS側で既に許容されている範囲の精緻化メモがある
+5. **デプロイ（将来）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。他の未実装機能が出揃った段階で着手する方針は変更なし

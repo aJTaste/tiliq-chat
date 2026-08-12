@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { closeTempChat, toggleRoomAuthRequired } from "@/app/actions/rooms";
+import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 /**
  * チャットオプションメニュー（Phase 6）。
@@ -46,26 +47,37 @@ export function ChatRoomOptionsMenu({
     setAuthRequired(next);
     setError(null);
     startToggleTransition(async () => {
-      const result = await toggleRoomAuthRequired(roomId, next);
-      if (!result.success) {
+      try {
+        const result = await toggleRoomAuthRequired(roomId, next);
+        if (!result.success) {
+          setAuthRequired(!next);
+          setError(result.error);
+        }
+      } catch {
         setAuthRequired(!next);
-        setError(result.error);
+        setError(NETWORK_ERROR_MESSAGE);
       }
     });
   }
 
   function handleCloseTempChat() {
     if (closing) return;
+    if (!window.confirm("このチャットを閉じますか？")) return;
     setClosing(true);
     setError(null);
     void (async () => {
-      const result = await closeTempChat(roomId);
-      setClosing(false);
-      if (!result.success) {
-        setError(result.error);
-        return;
+      try {
+        const result = await closeTempChat(roomId);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        router.push("/home");
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
+      } finally {
+        setClosing(false);
       }
-      router.push("/home");
     })();
   }
 

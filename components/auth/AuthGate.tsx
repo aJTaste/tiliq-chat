@@ -6,6 +6,7 @@ import {
   unlockAuthWithPassword,
   verifyAuthSecret,
 } from "@/app/actions/auth-secret";
+import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 // Phase 6: 追加認証（FR-19/FR-20/3.8）の3スコープ（起動時・各チャット・非表示一覧）で
 // 共通利用するゲート。友人・家族に端末を貸したときの覗き見防止という脅威モデルのため、
@@ -47,18 +48,23 @@ export function AuthGate({
     setPending(true);
     setError(null);
 
-    const result = await verifyAuthSecret(value);
-    setPending(false);
+    try {
+      const result = await verifyAuthSecret(value);
 
-    if (!result.success) {
-      setError(result.error);
-      setLocked(Boolean(result.locked));
-      setValue("");
-      return;
+      if (!result.success) {
+        setError(result.error);
+        setLocked(Boolean(result.locked));
+        setValue("");
+        return;
+      }
+
+      sessionStorage.setItem(storageKey, "1");
+      setUnlocked(true);
+    } catch {
+      setError(NETWORK_ERROR_MESSAGE);
+    } finally {
+      setPending(false);
     }
-
-    sessionStorage.setItem(storageKey, "1");
-    setUnlocked(true);
   }
 
   async function handleUnlockWithPassword(e: FormEvent) {
@@ -67,18 +73,23 @@ export function AuthGate({
     setPending(true);
     setError(null);
 
-    const result = await unlockAuthWithPassword(password);
-    setPending(false);
+    try {
+      const result = await unlockAuthWithPassword(password);
 
-    if (!result.success) {
-      setError(result.error);
-      return;
+      if (!result.success) {
+        setError(result.error);
+        return;
+      }
+
+      setPassword("");
+      setLocked(false);
+      setShowPasswordUnlock(false);
+      setJustUnlockedWithPassword(true);
+    } catch {
+      setError(NETWORK_ERROR_MESSAGE);
+    } finally {
+      setPending(false);
     }
-
-    setPassword("");
-    setLocked(false);
-    setShowPasswordUnlock(false);
-    setJustUnlockedWithPassword(true);
   }
 
   // sessionStorage確認前は何も表示しない（未解錠フォームのチラつき防止）
