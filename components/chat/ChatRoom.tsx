@@ -33,7 +33,27 @@ type MessageRow = Tables<"messages">;
 const PAGE_SIZE = 30;
 const MESSAGE_MAX_LENGTH = 4000;
 
+// Phase 14: テキスト送信失敗時の自動リトライ（SRS 3.4）。
+// 初回送信+自動リトライ3回＝計4回試行し、リトライ毎に指数バックオフで待機する。
+const MAX_AUTO_RETRIES = 3;
+const RETRY_BACKOFF_MS = [1000, 2000, 4000];
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 type UploadStage = "idle" | "compressing" | "uploading";
+
+// Phase 14: 自動リトライ・手動リトライの両方で使い回す送信ペイロード。
+// idをクライアント側で1回だけ生成し使い回すことで、タイムアウト等でクライアントが
+// 失敗と誤認しても（実際はDB側では成功していた場合）一意制約違反として検出できるようにする。
+type PendingMessagePayload = {
+  id: string;
+  content: string | null;
+  image_url: string | null;
+};
 
 // 過去メッセージをページングして読む際、時刻のみでは日付の手がかりが無いため、
 // 日付が変わったタイミングで区切り行を挿入する（E-2）。
@@ -119,12 +139,18 @@ export function ChatRoom({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [uploadStage, setUploadStage] = useState<UploadStage>("idle");
 
+  // Phase 14: 自動リトライ（初回+最大3回）を使い切った送信を手動リトライに切り替えるための保留状態。
+  const [retryPayload, setRetryPayload] =
+    useState<PendingMessagePayload | null>(null);
+  const [retrying, setRetrying] = useState(false);
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingScrollAdjustRef = useRef<number | null>(null);
   const pendingScrollToBottomRef = useRef(false);
+  const isMountedRef = useRef(true);
 
   const NEAR_BOTTOM_THRESHOLD_PX = 120;
   function isScrolledNearBottom() {
@@ -168,6 +194,14 @@ export function ChatRoom({
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
   }, [previewUrl]);
+
+  // Phase 14: 自動リトライの指数バックオフ待機中に別ルームへ遷移する等でアンマウントされた場合、
+  // その後に解決したPromiseがsetStateを呼ばないようにするためのガード。
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const channel = supabase
@@ -272,6 +306,50 @@ export function ChatRoom({
     setPreviewUrl(URL.createObjectURL(file));
   }
 
+  // Phase 14: DBへのinsertを初回+最大3回（計4回）まで指数バックオフで自動リトライする。
+  // 同一payload.idを使い回すため、途中の試行が実はDB側で成功していた（タイムアウト等で
+  // クライアントが誤って失敗と判定した）場合は一意制約違反（23505）として検出でき、
+  // その場合は該当行を取得して成功扱いにする（二重送信の防止）。
+  async function insertMessageWithRetry(
+    payload: PendingMessagePayload,
+  ): Promise<{ data: MessageRow | null; error: boolean }> {
+    for (let attempt = 0; attempt <= MAX_AUTO_RETRIES; attempt++) {
+      const { data, error } = await supabase
+        .from("messages")
+        .insert({
+          id: payload.id,
+          room_id: roomId,
+          sender_id: currentUserId,
+          content: payload.content,
+          image_url: payload.image_url,
+        })
+        .select()
+        .single();
+
+      if (!error && data) {
+        return { data, error: false };
+      }
+
+      if (error?.code === "23505") {
+        const { data: existing } = await supabase
+          .from("messages")
+          .select("*")
+          .eq("id", payload.id)
+          .maybeSingle();
+        if (existing) {
+          return { data: existing, error: false };
+        }
+      }
+
+      if (attempt < MAX_AUTO_RETRIES) {
+        await delay(RETRY_BACKOFF_MS[attempt]);
+        if (!isMountedRef.current) return { data: null, error: true };
+      }
+    }
+
+    return { data: null, error: true };
+  }
+
   async function sendMessage() {
     const content = inputValue.trim();
     if (!content && !selectedFile) return;
@@ -307,22 +385,20 @@ export function ChatRoom({
 
     setInputValue("");
 
-    const { data, error } = await supabase
-      .from("messages")
-      .insert({
-        room_id: roomId,
-        sender_id: currentUserId,
-        content: content.length > 0 ? content : null,
-        image_url: imageUrl,
-      })
-      .select()
-      .single();
+    const payload: PendingMessagePayload = {
+      id: crypto.randomUUID(),
+      content: content.length > 0 ? content : null,
+      image_url: imageUrl,
+    };
 
+    const { data, error } = await insertMessageWithRetry(payload);
+
+    if (!isMountedRef.current) return;
     setSending(false);
 
     if (error || !data) {
-      setSendError("送信に失敗しました。もう一度お試しください。");
-      setInputValue(content);
+      // SRS 3.4: 自動リトライ（最大3回）を使い切った後は手動リトライに切り替える。
+      setRetryPayload(payload);
       return;
     }
 
@@ -332,6 +408,32 @@ export function ChatRoom({
       return [...prev, data];
     });
     clearSelectedImage();
+  }
+
+  async function handleRetrySend() {
+    if (!retryPayload || retrying) return;
+    setRetrying(true);
+
+    const { data, error } = await insertMessageWithRetry(retryPayload);
+
+    if (!isMountedRef.current) return;
+    setRetrying(false);
+
+    if (error || !data) {
+      // 失敗した場合はバナー（保留ペイロード）をそのまま残し、再度手動リトライできるようにする。
+      return;
+    }
+
+    setRetryPayload(null);
+    pendingScrollToBottomRef.current = true;
+    setMessages((prev) => {
+      if (prev.some((m) => m.id === data.id)) return prev;
+      return [...prev, data];
+    });
+  }
+
+  function handleDiscardRetry() {
+    setRetryPayload(null);
   }
 
   function handleDeleteMessage(messageId: string) {
@@ -604,6 +706,32 @@ export function ChatRoom({
         <p className="px-4 pb-2 text-sm text-clay" role="alert">
           {sendError}
         </p>
+      )}
+      {retryPayload && (
+        <div
+          className="flex items-center justify-between gap-3 px-4 pb-2 text-sm text-clay"
+          role="alert"
+        >
+          <span>送信に失敗しました。</span>
+          <span className="flex shrink-0 gap-2">
+            <button
+              type="button"
+              onClick={() => void handleRetrySend()}
+              disabled={retrying}
+              className="rounded-lg border border-clay px-3 py-1 text-xs text-clay transition-colors hover:bg-clay/10 disabled:opacity-60"
+            >
+              {retrying ? "再試行中..." : "再試行"}
+            </button>
+            <button
+              type="button"
+              onClick={handleDiscardRetry}
+              disabled={retrying}
+              className="rounded-lg px-3 py-1 text-xs text-ink-muted transition-colors hover:bg-surface-raised disabled:opacity-60"
+            >
+              取り消し
+            </button>
+          </span>
+        </div>
       )}
     </div>
   );
