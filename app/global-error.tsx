@@ -15,8 +15,8 @@ import "./globals.css";
  * ServiceWorkerRegistrar/OfflineBanner/InstallPromptはここでは描画しない
  * （クラッシュ画面でクライアント副作用を追加するリスクを避けるため）。
  *
- * error.tsxと同じ理由でunstable_retryを使う（{ error, reset }ではない。
- * app/error.tsxのコメント参照）。
+ * retryプロパティの名称についてはapp/error.tsxのコメント参照
+ * （Next.js v16.3.0でunstable_retryから安定版retryへ名称変更。Phase 11で追従）。
  */
 
 const spaceGrotesk = Space_Grotesk({
@@ -39,10 +39,10 @@ const plexMono = IBM_Plex_Mono({
 
 export default function GlobalError({
   error,
-  unstable_retry,
+  retry,
 }: {
   error: Error & { digest?: string };
-  unstable_retry: () => void;
+  retry: () => void;
 }) {
   useEffect(() => {
     console.error(error);
@@ -63,7 +63,7 @@ export default function GlobalError({
           </p>
           <button
             type="button"
-            onClick={() => unstable_retry()}
+            onClick={() => retry()}
             className="rounded-lg bg-tongue px-5 py-2.5 font-medium text-white transition-opacity hover:opacity-90"
           >
             再試行
