@@ -35,7 +35,7 @@
 | Next.js               | 16.3.0（App Router。Phase 11で16.2.12から更新）              |
 | React                 | 19.2.8（Phase 11で19.2.4から更新）                           |
 | Tailwind CSS          | 4.3.3（CSS-first設定、`@theme` を `app/globals.css` に記述） |
-| TypeScript            | ^5                                                           |
+| TypeScript            | ~6.0.3（Phase 12で^5から更新。7系ではなく6.0系止まりである理由は「Phase 12 の実装内容・詳細」参照） |
 | @supabase/ssr         | ^0.12.4                                                      |
 | @supabase/supabase-js | ^2.112.3（Phase 11で^2.112.0から更新）                       |
 | Node.js               | 22系（`@types/node`もPhase 11で`^20`→`^22`に修正）           |
@@ -112,6 +112,7 @@ CLOUDINARY_API_SECRET=
 | 9     | SRS未実装の中規模項目（汎用エラー画面・チャット内検索・レスポンシブ配置・キーボードアクセシビリティ） | **完了** |
 | 10    | フレンド申請/解除のRealtime購読コード                                     | **完了** |
 | 11    | 依存パッケージのバージョン更新                                             | **完了** |
+| 12    | 依存パッケージのメジャー更新（typescript）                                | **完了** |
 
 ## Phase 1 の実装内容・詳細
 
@@ -629,6 +630,41 @@ Phase 8で見つかっていた依存パッケージのバージョン更新（`
 
 - `eslint`（9→10）・`typescript`（5→7系）のメジャー更新は今回見送ったまま。対応する場合は別途セッションを設けて移行作業を検討する
 
+## Phase 12 の実装内容・詳細
+
+Phase 11で見送った依存パッケージのメジャー更新（`eslint` 9→10、`typescript` 5→7系）に着手。実装前の調査で、当初の想定（`typescript`を7系まで一気に上げる）が現時点では実行不可能であることが判明し、さらに`eslint`の10系更新も実際に動かしてみたところ`eslint-config-next`が同梱するプラグインの一つが実行時クラッシュすることが分かった。結果として**`typescript`のみ5→6.0.3に更新し、`eslint`は9のまま据え置く**という、当初の候補（CLAUDE.md「次にやること（Phase 12・未確定）」候補2）とは異なる着地になった。
+
+### 変更ファイル
+
+- `package.json` — `typescript`: `^5` → `~6.0.3`（`eslint`は`^9`のまま変更なし）
+- `package-lock.json` — `npm install`実行に伴う更新
+
+### 調査で判明した内容（実装前にnpmレジストリ・実機検証で確認）
+
+1. **`typescript`の7系更新はブロックされている。** `eslint-config-next`が内部で使う`typescript-eslint`（現行8.65.0、canary版8.67.1-alpha.0でも同じ）の`peerDependencies`が`typescript: ">=4.8.4 <6.1.0"`に固定されており、7系は対象外。原因はTypeScript 7.0（Go移植のネイティブコンパイラ、通称tsgo）が`typescript-eslint`・`ts-morph`等が依存する**Programmatic Compiler API（旧Strada）を提供していない**ため。この制約が外れるのは**TypeScript 7.1（2026年秋予定）**と見込まれている
+2. **TypeScript本体は5.9の後、2026年3月に6.0を「最後のJS実装版・7.0への移行リリース」として正式リリース済み。** 6.0系はそのまま6.0.3が最新で、6.1系列自体がnpmに存在しない（6.0.3の次は7.0.1-rc）。`typescript-eslint`の許容上限`<6.1.0`にちょうど収まる
+3. **`tsconfig.json`は6.0の新デフォルト・非推奨化の影響を受けなかった。** `target: ES2017`・`moduleResolution: bundler`・`module: esnext`・`esModuleInterop: true`をいずれも明示指定済みで、6.0で非推奨化された`target: es5`・`moduleResolution: node/classic`・`baseUrl`・`outFile`等は元々未使用だったため。`npx tsc --noEmit`は変更前と同じくエラー0件
+4. **`eslint`の10系更新は実際に`npm install`・`npx eslint .`まで試したところ実行時クラッシュした。** `npm install`時点で`eslint-config-next`が同梱する`eslint-plugin-import`・`eslint-plugin-jsx-a11y`・`eslint-plugin-react`（いずれも2026年8月時点のnpm最新版）の`peerDependencies`が`eslint`10系を含んでおらず`ERESOLVE overriding peer dependency`警告が出た。警告だけなら実害が無いことも多いため実際に`npx eslint .`を実行して検証したところ、`eslint-plugin-react@7.37.5`内の`react/display-name`ルールが`context.getFilename is not a function`で例外を投げ、`.ts`ファイル（JSXすら含まない`app/actions/auth.ts`）を対象にした時点で即座にクラッシュした。ESLint 10で`RuleContext`から`getFilename()`等のレガシーAPIが除去された影響とみられる。**単なるpeer警告と実際の動作可否は別物であり、`npm install`が通ってもlintそのものは動かないケースが実在することを確認した実例。** `eslint-config-next`のcanary版（16.3.1-canary.13）・preview版（16.3.0-preview.10）でも同梱プラグインのバージョンは変わらず、この時点では回避策が無いと判断した
+5. 上記4の発覚を受けて`eslint`を`^9`（実際にインストールされるのは9.39.5）に戻し、`typescript`を6.0.3のまま`npx eslint .`（エラー0件）・`npx tsc --noEmit`（エラー0件）・クリーンビルド・`npm audit`を再実行し、いずれも問題ないことを確認してから確定させた
+
+### 設計判断・学び
+
+- **「メジャーバージョン更新の計画」フェーズで実際にインストール・実行まで検証したことで、npmレジストリの調査だけでは分からない実行時クラッシュを実装前に発見できた。** Phase 11の教訓（パッチ/マイナーに見えても実使用APIの破壊的変更がありうる）の延長線上だが、今回はさらに一歩踏み込み、「peer dependencyの警告が出ないこと」と「実際にコマンドが動くこと」は別の確認軸であることを実例で確認した。今後同種のメジャー更新を検討する際は、`npm ls`でのpeer警告確認だけで終わらせず、必ず対象コマンド（今回は`eslint .`）を実際に一度実行してから確定する運用を徹底する
+- **`typescript-eslint`・`eslint-plugin-react`等、直接の依存関係ではなく`eslint-config-next`が内部で選ぶ間接依存のバージョンは、こちら側の`package.json`を書き換えても制御できない。** Next.js本体・`eslint-config-next`側の追従を待つほかない受動的な制約として記録する
+
+### 検証方法・実施内容
+
+- `npm install`実行後、`npm ls typescript typescript-eslint eslint eslint-config-next`でinvalid/override警告が無いことを確認
+- `npx tsc --noEmit`（エラー0件）
+- `npx eslint .`（エラー0件、クラッシュ無し）
+- `rm -rf .next && npm run build`（クリーンビルド成功）
+- `npm audit`（脆弱性0件）
+
+### 未対応・持ち越し事項（Phase 12時点）
+
+- **`typescript`の7系更新：** `typescript-eslint`がTypeScript 7.1（2026年秋予定）に対応し次第、別セッションで再検討する。次回セッション開始時は`npm view typescript-eslint peerDependencies`で許容範囲が広がっていないか確認するとよい
+- **`eslint`の10系更新：** `eslint-config-next`が同梱する`eslint-plugin-react`（または`eslint-plugin-import`・`eslint-plugin-jsx-a11y`）がESLint 10のRuleContext API変更に追従し、`npx eslint .`が実際にクラッシュせず動作することを確認できてから再挑戦する。`eslint-config-next`の新しいバージョンがリリースされたタイミングで、まず`npm view eslint-config-next@latest dependencies`で同梱プラグインのバージョンが更新されているかを確認してから着手するとよい
+
 ## 検討中のアイデア・未確定のPhase割り当て
 
 以下はPhase 4完了後の会話で出た検討事項で、Phase 5完了時点でも状況は大きく変わっていない。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミングで扱いを決めること。
@@ -667,7 +703,7 @@ Phase 8で見つかっていた依存パッケージのバージョン更新（`
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
 
-## ファイル構成（Phase 11時点）
+## ファイル構成（Phase 12時点）
 
 ```
 tiliq-chat/
@@ -747,11 +783,11 @@ tiliq-chat/
 
 （`components/chat/NewDmForm.tsx`はPhase 5で`AddUserPanel`に統合されたため削除済み。`components/home/StrangerDmToggle.tsx`はPhase 7で`NotificationSettingsForm`に統合されたため削除済み。`app/actions/rooms.ts`の`startDirectMessage`関数はPhase 8でデッドコードとして削除済み）
 
-## 次にやること（Phase 12・未確定）
+## 次にやること（Phase 13・未確定）
 
-Phase 11（依存パッケージのバージョン更新）は完了し、実装内容は「Phase 11 の実装内容・詳細」セクションに記録済み。次のPhaseの内容はまだ確定していない。以下は候補（優先度未確定）。ユーザーから「許可不要で計画→実装を繰り返してよい、コミットも自由に行ってよい」との承認済み（2026-08-12）のため、次回セッションでは基本的にこのリストから妥当なものを選んで自律的に進めてよい：
+Phase 12（依存パッケージのメジャー更新）は完了し、実装内容は「Phase 12 の実装内容・詳細」セクションに記録済み。次のPhaseの内容はまだ確定していない。以下は候補（優先度未確定）。ユーザーから「許可不要で計画→実装を繰り返してよい、コミットも自由に行ってよい」との承認済み（2026-08-12）のため、次回セッションでは基本的にこのリストから妥当なものを選んで自律的に進めてよい：
 
 1. **Phase 9の持ち越し・簡略化事項の仕上げ：** FR-14の「同グループメンバーも検索対象に追加」チェックボックス（グループチャットUI実装後）、FR-15の「PCでは常時展開」への調整（現状はPC・スマホ共通のトグル開閉のまま）
-2. **`eslint`（9→10）・`typescript`（5→7系）のメジャー更新：** Phase 11で意図的に見送った項目。移行作業（flat config対応等）の調査が別途必要
+2. **`eslint`（9→10）・`typescript`（6.0→7系）のメジャー更新の再挑戦：** Phase 12で判明した通り、`eslint`は`eslint-config-next`同梱の`eslint-plugin-react`がESLint 10のRuleContext API変更に追従するまで、`typescript`は`typescript-eslint`がTypeScript 7.1（2026年秋予定）に対応するまでブロックされている。着手前に必ず`npm view eslint-config-next@latest dependencies`・`npm view typescript-eslint peerDependencies`で状況を再確認し、実際に`npx eslint .`まで動かして検証してから確定すること（詳細は「Phase 12 の実装内容・詳細」参照）
 3. **「検討中のアイデア・未確定のPhase割り当て」セクション記載の項目：** グループチャットUI（FR-4）、テキスト送信失敗時の自動リトライ（SRS 3.4）、真の楽観的更新、複数チャットレイアウト対応（LINE風/Discord風）。いずれもPhase未割り当てのまま。グループチャットUIについては「Phase 8 の実装内容・詳細」の持ち越し事項に、現状DB/RLS側で既に許容されている範囲の精緻化メモがある。他の候補より規模が大きく複数セッションに渡る見込みのため、着手する場合はまずスコープを1セッション分に区切ってから進めること
 4. **デプロイ（将来）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。他の未実装機能が出揃った段階で着手する方針は変更なし
