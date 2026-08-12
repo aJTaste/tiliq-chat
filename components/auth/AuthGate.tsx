@@ -102,85 +102,93 @@ export function AuthGate({
   }
 
   return (
-    <div className="flex min-h-[50vh] w-full flex-1 flex-col items-center justify-center gap-4 px-6 py-10 text-center">
-      <p className="font-display text-lg font-semibold text-ink">
-        {title ?? "認証が必要です"}
-      </p>
-      <p className="max-w-xs text-sm text-ink-muted">
-        設定した認証PIN／キーを入力してください。
-      </p>
-
-      {justUnlockedWithPassword && (
-        <p className="max-w-xs text-xs text-ink-muted">
-          ロックを解除しました。PIN／キーを忘れた場合は
-          <Link href="/settings" className="text-tongue underline">
-            設定画面
-          </Link>
-          から再設定できます。
+    <div className="flex min-h-[50vh] w-full flex-1 flex-col items-center">
+      {/* Phase 16: justify-centerによる数学的な中央だと「気持ち下」に見えるという
+          実機フィードバックを受け、上下のスペーサーの比率を2:3にして心持ち上寄りに
+          表示する（コンテンツを挟む2つの空divの伸び幅の比率で位置を決めるため、
+          画面の高さやコンテンツの高さが変わっても比率は保たれる）。 */}
+      <div aria-hidden="true" className="flex-[2]" />
+      <div className="flex w-full flex-col items-center gap-4 px-6 py-10 text-center">
+        <p className="font-display text-lg font-semibold text-ink">
+          {title ?? "認証が必要です"}
         </p>
-      )}
+        <p className="max-w-xs text-sm text-ink-muted">
+          設定した認証PIN／キーを入力してください。
+        </p>
 
-      {!locked ? (
-        <form
-          onSubmit={handleSubmit}
-          className="flex w-full max-w-xs flex-col gap-2"
-        >
-          <input
-            type="password"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            autoFocus
-            className="rounded-lg border border-band bg-surface-raised px-3 py-2 text-center text-ink outline-none focus-visible:border-tongue"
-          />
-          <button
-            type="submit"
-            disabled={pending || value.length === 0}
-            className="rounded-lg bg-tongue px-4 py-2 font-medium text-white transition-opacity disabled:opacity-60"
+        {justUnlockedWithPassword && (
+          <p className="max-w-xs text-xs text-ink-muted">
+            ロックを解除しました。PIN／キーを忘れた場合は
+            <Link href="/settings" className="text-tongue underline">
+              設定画面
+            </Link>
+            から再設定できます。
+          </p>
+        )}
+
+        {!locked ? (
+          <form
+            onSubmit={handleSubmit}
+            className="flex w-full max-w-xs flex-col gap-2"
           >
-            {pending ? "確認中..." : "確認"}
-          </button>
-        </form>
-      ) : (
-        <div className="flex w-full max-w-xs flex-col gap-3">
-          <p className="text-sm text-clay">連続失敗によりロック中です。</p>
-          {!showPasswordUnlock ? (
+            <input
+              type="password"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              autoFocus
+              className="rounded-lg border border-band bg-surface-raised px-3 py-2 text-center text-ink outline-none focus-visible:border-tongue"
+            />
             <button
-              type="button"
-              onClick={() => setShowPasswordUnlock(true)}
-              className="rounded-lg border border-band px-3 py-1.5 text-sm text-ink-muted transition-colors hover:bg-surface-raised"
+              type="submit"
+              disabled={pending || value.length === 0}
+              className="rounded-lg bg-tongue px-4 py-2 font-medium text-white transition-opacity disabled:opacity-60"
             >
-              アカウントのパスワードで解除する
+              {pending ? "確認中..." : "確認"}
             </button>
-          ) : (
-            <form
-              onSubmit={handleUnlockWithPassword}
-              className="flex flex-col gap-2"
-            >
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="アカウントのパスワード"
-                autoFocus
-                className="rounded-lg border border-band bg-surface-raised px-3 py-2 text-center text-ink outline-none focus-visible:border-tongue"
-              />
+          </form>
+        ) : (
+          <div className="flex w-full max-w-xs flex-col gap-3">
+            <p className="text-sm text-clay">連続失敗によりロック中です。</p>
+            {!showPasswordUnlock ? (
               <button
-                type="submit"
-                disabled={pending || password.length === 0}
-                className="rounded-lg bg-tongue px-4 py-2 font-medium text-white transition-opacity disabled:opacity-60"
+                type="button"
+                onClick={() => setShowPasswordUnlock(true)}
+                className="rounded-lg border border-band px-3 py-1.5 text-sm text-ink-muted transition-colors hover:bg-surface-raised"
               >
-                {pending ? "確認中..." : "ロックを解除"}
+                アカウントのパスワードで解除する
               </button>
-            </form>
-          )}
-        </div>
-      )}
+            ) : (
+              <form
+                onSubmit={handleUnlockWithPassword}
+                className="flex flex-col gap-2"
+              >
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="アカウントのパスワード"
+                  autoFocus
+                  className="rounded-lg border border-band bg-surface-raised px-3 py-2 text-center text-ink outline-none focus-visible:border-tongue"
+                />
+                <button
+                  type="submit"
+                  disabled={pending || password.length === 0}
+                  className="rounded-lg bg-tongue px-4 py-2 font-medium text-white transition-opacity disabled:opacity-60"
+                >
+                  {pending ? "確認中..." : "ロックを解除"}
+                </button>
+              </form>
+            )}
+          </div>
+        )}
 
-      {error && (
-        <p className="text-xs text-clay" role="alert">
-          {error}
-        </p>
-      )}
+        {error && (
+          <p className="text-xs text-clay" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+      <div aria-hidden="true" className="flex-[3]" />
     </div>
   );
 }
