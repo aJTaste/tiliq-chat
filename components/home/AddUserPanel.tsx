@@ -60,7 +60,8 @@ const DURATION_OPTIONS: { value: DurationSelection; label: string }[] = [
  * ボトムバーとして配置する（Phase 9。CSSメディアクエリのみで切り替え、JSでの
  * ブレークポイント判定はしない。AuthGate.tsx/OfflineBanner.tsxが「SSR時はnull→
  * マウント後に実値」という回避策を取っているのと同種のハイドレーション不一致リスクを
- * 避けるため）。開閉状態自体は両ブレークポイント共通（初期値は折りたたみ）。
+ * 避けるため）。PCでは常時展開（Phase 13。パネル本体は常にマウントし`md:flex`で
+ * 強制表示することで実現。`open` stateはスマホの折りたたみ制御にのみ意味を持つ）。
  * フレンド申請の送受信・承認・拒否・取り消し（FR-11）もここに集約する。
  */
 export function AddUserPanel({
@@ -326,109 +327,132 @@ export function AddUserPanel({
         )}
       </button>
 
-      {open && (
-        <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto px-6 pb-5 md:max-h-none">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="ユーザーIDで検索"
-            aria-label="ユーザーIDで検索"
-            className="rounded-lg border border-band bg-surface-raised px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
-          />
+      <div
+        className={`${open ? "flex" : "hidden"} max-h-[70vh] flex-col gap-4 overflow-y-auto px-6 pb-5 md:flex md:max-h-none`}
+      >
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="ユーザーIDで検索"
+          aria-label="ユーザーIDで検索"
+          className="rounded-lg border border-band bg-surface-raised px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+        />
 
-          {error && (
-            <p className="text-sm text-clay" role="alert">
-              {error}
-            </p>
-          )}
+        {error && (
+          <p className="text-sm text-clay" role="alert">
+            {error}
+          </p>
+        )}
 
-          {searching && <p className="text-xs text-ink-muted">検索中...</p>}
+        {searching && <p className="text-xs text-ink-muted">検索中...</p>}
 
-          {!searching && query.trim().length > 0 && results.length === 0 && (
-            <p className="text-xs text-ink-muted">
-              ユーザーが見つかりませんでした。
-            </p>
-          )}
+        {!searching && query.trim().length > 0 && results.length === 0 && (
+          <p className="text-xs text-ink-muted">
+            ユーザーが見つかりませんでした。
+          </p>
+        )}
 
-          {results.length > 0 && (
-            <ul className="flex flex-col gap-2">
-              {results.map((r) => (
-                <li
-                  key={r.userId}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-ink">
-                      {r.displayName}
-                    </p>
-                    <p className="truncate text-xs text-ink-muted">
-                      @{r.username}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                    {!r.existingRoomId && (
-                      <select
-                        value={durationByUser[r.userId] ?? "normal"}
-                        onChange={(e) =>
-                          setDurationByUser((prev) => ({
-                            ...prev,
-                            [r.userId]: e.target.value as DurationSelection,
-                          }))
-                        }
-                        aria-label="有効期限"
-                        className="rounded-lg border border-band bg-surface px-1.5 py-1 text-xs text-ink-muted"
-                      >
-                        {DURATION_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
+        {results.length > 0 && (
+          <ul className="flex flex-col gap-2">
+            {results.map((r) => (
+              <li
+                key={r.userId}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-ink">
+                    {r.displayName}
+                  </p>
+                  <p className="truncate text-xs text-ink-muted">
+                    @{r.username}
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                  {!r.existingRoomId && (
+                    <select
+                      value={durationByUser[r.userId] ?? "normal"}
+                      onChange={(e) =>
+                        setDurationByUser((prev) => ({
+                          ...prev,
+                          [r.userId]: e.target.value as DurationSelection,
+                        }))
+                      }
+                      aria-label="有効期限"
+                      className="rounded-lg border border-band bg-surface px-1.5 py-1 text-xs text-ink-muted"
+                    >
+                      {DURATION_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {!r.existingRoomId &&
+                    durationByUser[r.userId] === "custom" && (
+                      <span className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min={1}
+                          value={customByUser[r.userId]?.amount ?? ""}
+                          onChange={(e) =>
+                            setCustomByUser((prev) => ({
+                              ...prev,
+                              [r.userId]: {
+                                amount: e.target.value,
+                                unit: prev[r.userId]?.unit ?? "hours",
+                              },
+                            }))
+                          }
+                          aria-label="有効期限（数値）"
+                          className="w-14 rounded-lg border border-band bg-surface px-1.5 py-1 text-xs text-ink"
+                        />
+                        <select
+                          value={customByUser[r.userId]?.unit ?? "hours"}
+                          onChange={(e) =>
+                            setCustomByUser((prev) => ({
+                              ...prev,
+                              [r.userId]: {
+                                amount: prev[r.userId]?.amount ?? "",
+                                unit: e.target.value as
+                                  | "minutes"
+                                  | "hours"
+                                  | "days",
+                              },
+                            }))
+                          }
+                          aria-label="有効期限の単位"
+                          className="rounded-lg border border-band bg-surface px-1.5 py-1 text-xs text-ink-muted"
+                        >
+                          <option value="minutes">分</option>
+                          <option value="hours">時間</option>
+                          <option value="days">日</option>
+                        </select>
+                      </span>
                     )}
-                    {!r.existingRoomId &&
-                      durationByUser[r.userId] === "custom" && (
-                        <span className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min={1}
-                            value={customByUser[r.userId]?.amount ?? ""}
-                            onChange={(e) =>
-                              setCustomByUser((prev) => ({
-                                ...prev,
-                                [r.userId]: {
-                                  amount: e.target.value,
-                                  unit: prev[r.userId]?.unit ?? "hours",
-                                },
-                              }))
-                            }
-                            aria-label="有効期限（数値）"
-                            className="w-14 rounded-lg border border-band bg-surface px-1.5 py-1 text-xs text-ink"
-                          />
-                          <select
-                            value={customByUser[r.userId]?.unit ?? "hours"}
-                            onChange={(e) =>
-                              setCustomByUser((prev) => ({
-                                ...prev,
-                                [r.userId]: {
-                                  amount: prev[r.userId]?.amount ?? "",
-                                  unit: e.target.value as
-                                    | "minutes"
-                                    | "hours"
-                                    | "days",
-                                },
-                              }))
-                            }
-                            aria-label="有効期限の単位"
-                            className="rounded-lg border border-band bg-surface px-1.5 py-1 text-xs text-ink-muted"
-                          >
-                            <option value="minutes">分</option>
-                            <option value="hours">時間</option>
-                            <option value="days">日</option>
-                          </select>
-                        </span>
-                      )}
-                    {r.friendshipStatus === "accepted" ? (
+                  {r.friendshipStatus === "accepted" ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleMessage(r.userId, r.existingRoomId)
+                      }
+                      disabled={pending}
+                      className="rounded-lg bg-tongue px-2.5 py-1 text-xs font-medium text-white disabled:opacity-60"
+                    >
+                      メッセージ
+                    </button>
+                  ) : r.friendshipStatus === "pending_sent" ? (
+                    <span className="text-xs text-ink-muted">申請中</span>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleAddFriend(r.userId)}
+                        disabled={pending}
+                        className="rounded-lg border border-tongue px-2.5 py-1 text-xs font-medium text-tongue disabled:opacity-60"
+                      >
+                        フレンド申請
+                      </button>
                       <button
                         type="button"
                         onClick={() =>
@@ -439,157 +463,134 @@ export function AddUserPanel({
                       >
                         メッセージ
                       </button>
-                    ) : r.friendshipStatus === "pending_sent" ? (
-                      <span className="text-xs text-ink-muted">申請中</span>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleAddFriend(r.userId)}
-                          disabled={pending}
-                          className="rounded-lg border border-tongue px-2.5 py-1 text-xs font-medium text-tongue disabled:opacity-60"
-                        >
-                          フレンド申請
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleMessage(r.userId, r.existingRoomId)
-                          }
-                          disabled={pending}
-                          className="rounded-lg bg-tongue px-2.5 py-1 text-xs font-medium text-white disabled:opacity-60"
-                        >
-                          メッセージ
-                        </button>
-                      </>
-                    )}
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleBlock(r.userId)}
+                    disabled={pending}
+                    className="text-xs text-ink-muted underline underline-offset-2 disabled:opacity-60"
+                  >
+                    ブロック
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {receivedPending.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <p className="font-label text-xs uppercase tracking-wide text-ink-muted">
+              届いているフレンド申請
+            </p>
+            <ul className="flex flex-col gap-2">
+              {receivedPending.map((r) => (
+                <li
+                  key={r.friendshipId}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-ink">
+                      {r.counterpartDisplayName}
+                    </p>
+                    <p className="truncate text-xs text-ink-muted">
+                      @{r.counterpartUsername}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => handleBlock(r.userId)}
+                      onClick={() => handleRespond(r.friendshipId, true)}
                       disabled={pending}
-                      className="text-xs text-ink-muted underline underline-offset-2 disabled:opacity-60"
+                      className="rounded-lg bg-tongue px-2.5 py-1 text-xs font-medium text-white disabled:opacity-60"
                     >
-                      ブロック
+                      承認
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRespond(r.friendshipId, false)}
+                      disabled={pending}
+                      className="rounded-lg border border-band px-2.5 py-1 text-xs text-ink-muted disabled:opacity-60"
+                    >
+                      拒否
                     </button>
                   </div>
                 </li>
               ))}
             </ul>
-          )}
+          </div>
+        )}
 
-          {receivedPending.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <p className="font-label text-xs uppercase tracking-wide text-ink-muted">
-                届いているフレンド申請
-              </p>
-              <ul className="flex flex-col gap-2">
-                {receivedPending.map((r) => (
-                  <li
-                    key={r.friendshipId}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-ink">
-                        {r.counterpartDisplayName}
-                      </p>
-                      <p className="truncate text-xs text-ink-muted">
-                        @{r.counterpartUsername}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleRespond(r.friendshipId, true)}
-                        disabled={pending}
-                        className="rounded-lg bg-tongue px-2.5 py-1 text-xs font-medium text-white disabled:opacity-60"
-                      >
-                        承認
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleRespond(r.friendshipId, false)}
-                        disabled={pending}
-                        className="rounded-lg border border-band px-2.5 py-1 text-xs text-ink-muted disabled:opacity-60"
-                      >
-                        拒否
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {sentRequests.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <p className="font-label text-xs uppercase tracking-wide text-ink-muted">
-                送信したフレンド申請
-              </p>
-              <ul className="flex flex-col gap-2">
-                {sentRequests.map((r) => (
-                  <li
-                    key={r.friendshipId}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-ink">
-                        {r.counterpartDisplayName}
-                      </p>
-                      <p className="truncate text-xs text-ink-muted">
-                        {r.status === "rejected"
-                          ? "拒否されました"
-                          : "承認待ち"}
-                      </p>
-                    </div>
-                    {r.status === "pending" && (
-                      <button
-                        type="button"
-                        onClick={() => handleCancel(r.friendshipId)}
-                        disabled={pending}
-                        className="shrink-0 text-xs text-ink-muted underline underline-offset-2 disabled:opacity-60"
-                      >
-                        取り消す
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {blockedUsers.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <p className="font-label text-xs uppercase tracking-wide text-ink-muted">
-                ブロック中のユーザー
-              </p>
-              <ul className="flex flex-col gap-2">
-                {blockedUsers.map((u) => (
-                  <li
-                    key={u.userId}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-ink">
-                        {u.displayName}
-                      </p>
-                      <p className="truncate text-xs text-ink-muted">
-                        @{u.username}
-                      </p>
-                    </div>
+        {sentRequests.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <p className="font-label text-xs uppercase tracking-wide text-ink-muted">
+              送信したフレンド申請
+            </p>
+            <ul className="flex flex-col gap-2">
+              {sentRequests.map((r) => (
+                <li
+                  key={r.friendshipId}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-ink">
+                      {r.counterpartDisplayName}
+                    </p>
+                    <p className="truncate text-xs text-ink-muted">
+                      {r.status === "rejected"
+                        ? "拒否されました"
+                        : "承認待ち"}
+                    </p>
+                  </div>
+                  {r.status === "pending" && (
                     <button
                       type="button"
-                      onClick={() => handleUnblock(u.userId)}
+                      onClick={() => handleCancel(r.friendshipId)}
                       disabled={pending}
-                      className="shrink-0 rounded-lg border border-band px-2.5 py-1 text-xs text-ink-muted disabled:opacity-60"
+                      className="shrink-0 text-xs text-ink-muted underline underline-offset-2 disabled:opacity-60"
                     >
-                      ブロック解除
+                      取り消す
                     </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {blockedUsers.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <p className="font-label text-xs uppercase tracking-wide text-ink-muted">
+              ブロック中のユーザー
+            </p>
+            <ul className="flex flex-col gap-2">
+              {blockedUsers.map((u) => (
+                <li
+                  key={u.userId}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-ink">
+                      {u.displayName}
+                    </p>
+                    <p className="truncate text-xs text-ink-muted">
+                      @{u.username}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleUnblock(u.userId)}
+                    disabled={pending}
+                    className="shrink-0 rounded-lg border border-band px-2.5 py-1 text-xs text-ink-muted disabled:opacity-60"
+                  >
+                    ブロック解除
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
