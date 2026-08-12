@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { AuthGate } from "@/components/auth/AuthGate";
 import {
@@ -29,6 +30,11 @@ type HomeData = {
  */
 function GatedHomeBody({ userId }: { userId: string }) {
   const [data, setData] = useState<HomeData | null>(null);
+  // Phase 10: friendshipsのRealtime変更を受けてload()を再実行するためのトリガー。
+  // router.refresh()はServer Component側の保護データ取得（AuthGate解錠前は取得しない
+  // 設計）をバイパスできないため、ここではこのキーを介してクライアント側の再取得を
+  // 明示的に起こす。
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const supabase = createClient();
@@ -106,6 +112,28 @@ function GatedHomeBody({ userId }: { userId: string }) {
     return () => {
       cancelled = true;
     };
+  }, [userId, reloadKey]);
+
+  // Phase 10: フレンド申請の送信・承認・拒否・取り消し・解除（friendships）を
+  // Realtimeで購読し、相手側の操作もリロード無しで反映する。friendships_select_involved
+  // のRLS（requester_id/addressee_idどちらでも参照可）により、フィルタを指定しなくても
+  // 自分が関与する行のイベントのみが届く（docs/schema.sql参照）。blocksは
+  // blocks_select_ownのRLS（blocker_idのみ）で相手の操作が原理的に見えない設計のため
+  // 購読しない（自分の操作は既存のUIで即時反映済み）。
+  useEffect(() => {
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`home-friendships-gated:${userId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "friendships" },
+        () => setReloadKey((k) => k + 1),
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [userId]);
 
   if (!data) {
@@ -138,6 +166,29 @@ export function HomeContent({
   initialBlockedUsers: BlockedUserItem[];
   initialLoadError: boolean;
 }) {
+  const router = useRouter();
+
+  // Phase 10: 非ゲート時のfriendships購読。GatedHomeBody側とは別に用意する
+  // （Reactのフック規約上、下のif (!gated)による早期returnより手前で無条件に
+  // フックを呼ぶ必要があるため）。ゲート時はこのeffect内で早期returnし、
+  // GatedHomeBody自身の購読に委ねる。
+  useEffect(() => {
+    if (gated) return;
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`home-friendships:${userId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "friendships" },
+        () => router.refresh(),
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [gated, userId, router]);
+
   if (!gated) {
     return (
       <>
