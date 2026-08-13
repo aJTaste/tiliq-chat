@@ -58,20 +58,24 @@ export function GatedShellBody({
     let cancelled = false;
 
     async function load() {
-      const [profileResult, conversationsResult, requestsResult, blocksResult] =
-        await Promise.all([
-          supabase
-            .from("profiles")
-            .select("display_name")
-            .eq("id", userId)
-            .single(),
-          supabase.rpc("get_conversation_list"),
-          supabase.rpc("get_friend_requests"),
-          supabase
-            .from("blocks")
-            .select("blocked_id")
-            .eq("blocker_id", userId),
-        ]);
+      const [
+        profileResult,
+        conversationsResult,
+        requestsResult,
+        blocksResult,
+        groupConversationsResult,
+      ] = await Promise.all([
+        supabase
+          .from("profiles")
+          .select("display_name")
+          .eq("id", userId)
+          .single(),
+        supabase.rpc("get_conversation_list"),
+        supabase.rpc("get_friend_requests"),
+        supabase.from("blocks").select("blocked_id").eq("blocker_id", userId),
+        // Phase 19: グループチャットUI M1
+        supabase.rpc("get_group_conversation_list"),
+      ]);
 
       // Phase 8: 空状態と見分けが付かなくなることを防ぐため、いずれかのクエリが
       // 失敗した場合はloadErrorを立ててHomeTabsまで伝播させる（非ゲート時と同じ対応）。
@@ -79,7 +83,8 @@ export function GatedShellBody({
         profileResult.error ||
           conversationsResult.error ||
           requestsResult.error ||
-          blocksResult.error,
+          blocksResult.error ||
+          groupConversationsResult.error,
       );
 
       const displayName = profileResult.data?.display_name ?? "Tiliqua";
@@ -87,6 +92,7 @@ export function GatedShellBody({
       const conversations: ConversationItem[] = (
         conversationsResult.data ?? []
       ).map((row) => ({
+        kind: "dm" as const,
         roomId: row.room_id,
         otherUserId: row.other_user_id,
         otherUsername: row.other_username,
@@ -97,6 +103,18 @@ export function GatedShellBody({
         lastMessageAt: row.last_message_at ?? null,
         isTemporary: row.is_temporary ?? false,
         expiresAt: row.expires_at ?? null,
+      }));
+
+      const groupConversations: ConversationItem[] = (
+        groupConversationsResult.data ?? []
+      ).map((row) => ({
+        kind: "group" as const,
+        roomId: row.room_id,
+        groupName: row.name ?? null,
+        memberNames: row.member_names ?? [],
+        memberCount: row.member_count,
+        lastMessagePreview: row.last_message_preview ?? null,
+        lastMessageAt: row.last_message_at ?? null,
       }));
 
       const friendRequests: FriendRequestItem[] = (
@@ -131,7 +149,13 @@ export function GatedShellBody({
       }));
 
       if (!cancelled) {
-        setData({ displayName, conversations, friendRequests, blockedUsers, loadError });
+        setData({
+          displayName,
+          conversations: [...conversations, ...groupConversations],
+          friendRequests,
+          blockedUsers,
+          loadError,
+        });
       }
     }
 

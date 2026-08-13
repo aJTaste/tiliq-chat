@@ -327,6 +327,10 @@ export type Database = {
         Returns: undefined
       }
       cleanup_expired_temp_chats: { Args: never; Returns: undefined }
+      create_group_room: {
+        Args: { p_member_ids: string[]; p_name?: string }
+        Returns: string
+      }
       create_temp_dm_room: {
         Args: { p_expires_at: string; p_other_user_id: string }
         Returns: string
@@ -359,6 +363,17 @@ export type Database = {
           friendship_id: string
           is_read: boolean
           status: string
+        }[]
+      }
+      get_group_conversation_list: {
+        Args: never
+        Returns: {
+          last_message_at: string
+          last_message_preview: string
+          member_count: number
+          member_names: string[]
+          name: string
+          room_id: string
         }[]
       }
       get_or_create_dm_room: {

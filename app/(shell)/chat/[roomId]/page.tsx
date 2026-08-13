@@ -29,7 +29,7 @@ export default async function ChatRoomPage({
   const [roomResult, myMembershipResult, settingsResult] = await Promise.all([
     supabase
       .from("rooms")
-      .select("id, is_group, is_temporary")
+      .select("id, is_group, is_temporary, name")
       .eq("id", roomId)
       .maybeSingle(),
     // FR-20「各チャット」スコープ：自分がこの部屋に鍵をかけているか
@@ -92,8 +92,81 @@ export default async function ChatRoomPage({
           roomId={roomId}
           currentUserId={user.id}
           isTemporary={room.is_temporary}
+          isGroup={room.is_group}
         />
       </AuthGate>
+    );
+  }
+
+  // Phase 19: グループチャットUI M1。DM（相手1人）とグループ（複数人）で
+  // 「相手」の取得方法が根本的に異なるため、ここで完全に分岐する。
+  if (room.is_group) {
+    const { data: memberRows } = await supabase
+      .from("room_members")
+      .select("user_id")
+      .eq("room_id", roomId);
+
+    if (!memberRows) {
+      notFound();
+    }
+
+    const allMemberIds = memberRows.map((row) => row.user_id);
+
+    // room_members.user_idはauth.users(id)を参照しprofiles(id)への直接FKが無いため、
+    // PostgRESTのネスト埋め込みは使えず2段階のクエリになる（既存のDM側otherMember→
+    // otherProfileと同じパターン）。
+    const { data: memberProfiles } = await supabase
+      .from("profiles")
+      .select("id, display_name")
+      .in("id", allMemberIds);
+
+    const members = (memberProfiles ?? [])
+      .filter((p) => p.id !== user.id)
+      .map((p) => ({ id: p.id, displayName: p.display_name }));
+
+    // blocksクエリは省略（グループには1対1のブロックUIが無いM1スコープの制約。
+    // 既存のmessages_insert_member_not_blocked RLSは引き続き送信時に効く）。
+    const [messagesResult, hiddenResult] = await Promise.all([
+      supabase
+        .from("messages")
+        .select("*")
+        .eq("room_id", roomId)
+        .is("deleted_at", null)
+        .order("created_at", { ascending: false })
+        .limit(PAGE_SIZE),
+      supabase
+        .from("message_hidden")
+        .select("message_id, messages!inner(room_id)")
+        .eq("user_id", user.id)
+        .eq("messages.room_id", roomId),
+    ]);
+
+    const initialMessagesDesc = messagesResult.data;
+    const initialMessages = [...(initialMessagesDesc ?? [])].reverse();
+    const initialHasMore = (initialMessagesDesc?.length ?? 0) === PAGE_SIZE;
+
+    const hiddenRows = hiddenResult.data;
+    const initialHiddenMessageIds = (hiddenRows ?? []).map(
+      (row) => row.message_id,
+    );
+
+    return (
+      <ChatRoom
+        roomId={roomId}
+        currentUserId={user.id}
+        peer={{
+          kind: "group",
+          roomName: room.name,
+          memberCount: allMemberIds.length,
+          members,
+        }}
+        initialMessages={initialMessages}
+        initialHasMore={initialHasMore}
+        initialIsBlockedByMe={false}
+        initialHiddenMessageIds={initialHiddenMessageIds}
+        initialAuthRequired={myMembership.auth_required}
+        isTemporary={room.is_temporary}
+      />
     );
   }
 
@@ -159,7 +232,8 @@ export default async function ChatRoomPage({
     <ChatRoom
       roomId={roomId}
       currentUserId={user.id}
-      otherUser={{
+      peer={{
+        kind: "dm",
         id: otherProfile.id,
         username: otherProfile.username,
         displayName: otherProfile.display_name,

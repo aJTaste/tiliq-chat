@@ -1343,3 +1343,152 @@ revoke execute on function public.block_user(uuid) from anon;
 
 alter publication supabase_realtime add table public.friendships;
 alter publication supabase_realtime add table public.blocks;
+
+-- =============================================================================
+-- Phase 19: グループチャットUI M1（FR-4）— グループルーム作成・一覧取得
+-- 適用済み（Supabase MCP: apply_migration "phase19_group_room_creation_m1"）。
+-- 既存のDM専用RPC・RLS・messages_insert_member_not_blockedポリシーは一切変更しない。
+-- -----------------------------------------------------------------------------
+
+-- create_group_room: グループルーム新規作成。作成者以外に2人以上（合計3人以上）を要求し、
+-- 作成者を含む全メンバー間の総当たりでブロック関係が1組でもあれば拒否する
+-- （search_usersは「検索者から見たブロック」しか除外しないため、招待メンバー同士の
+-- ブロックは別途ここで検出する必要がある）。room_members_insert_self_or_ownerのRLSは
+-- 既存ownerを要求するため、最初のowner行挿入にはsecurity definerが必須。
+-- グループの最大人数は要件に明記が無いが、安全側のデフォルトとして合計50人
+-- （招待49人まで）のソフトキャップを設けている。
+create or replace function public.create_group_room(
+  p_member_ids uuid[],
+  p_name text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_self uuid := auth.uid();
+  v_member_ids uuid[];
+  v_all_ids uuid[];
+  v_name text;
+  v_room_id uuid;
+  v_member_id uuid;
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  select array_agg(distinct uid) into v_member_ids
+  from unnest(coalesce(p_member_ids, array[]::uuid[])) as uid
+  where uid <> v_self;
+
+  if array_length(v_member_ids, 1) is null or array_length(v_member_ids, 1) < 2 then
+    raise exception 'group requires at least 2 other members';
+  end if;
+
+  if array_length(v_member_ids, 1) > 49 then
+    raise exception 'group size limit exceeded';
+  end if;
+
+  if (select count(*) from public.profiles where id = any(v_member_ids))
+      <> array_length(v_member_ids, 1) then
+    raise exception 'member not found';
+  end if;
+
+  v_name := nullif(trim(coalesce(p_name, '')), '');
+  if v_name is not null and char_length(v_name) > 50 then
+    raise exception 'group name too long';
+  end if;
+
+  v_all_ids := array_append(v_member_ids, v_self);
+
+  if exists (
+    select 1
+    from unnest(v_all_ids) a(user_id)
+    join unnest(v_all_ids) b(user_id) on a.user_id <> b.user_id
+    where public.is_blocked(a.user_id, b.user_id)
+  ) then
+    raise exception 'cannot create group: blocked member pair';
+  end if;
+
+  insert into public.rooms (is_group, name) values (true, v_name)
+  returning id into v_room_id;
+
+  insert into public.room_members (room_id, user_id, role)
+  values (v_room_id, v_self, 'owner');
+
+  foreach v_member_id in array v_member_ids loop
+    insert into public.room_members (room_id, user_id, role)
+    values (v_room_id, v_member_id, 'member');
+  end loop;
+
+  return v_room_id;
+end;
+$$;
+
+revoke execute on function public.create_group_room(uuid[], text) from public;
+grant execute on function public.create_group_room(uuid[], text) to authenticated;
+revoke execute on function public.create_group_room(uuid[], text) from anon;
+
+-- get_group_conversation_list: ホーム「グループ」タブ用一覧取得。
+-- get_conversation_listと対になるが、is_group=trueのみを対象にし「相手1人」ではなく
+-- 人数・自分以外の全メンバー表示名配列・直近メッセージを返す。表示上の件数トリミングは
+-- クライアント側の判断とし、ここでは切り詰めない。
+create or replace function public.get_group_conversation_list()
+returns table (
+  room_id uuid,
+  name text,
+  member_count integer,
+  member_names text[],
+  last_message_preview text,
+  last_message_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  with my_rooms as (
+    select rm.room_id
+    from public.room_members rm
+    join public.rooms r on r.id = rm.room_id
+    where rm.user_id = auth.uid() and r.is_group = true
+  ),
+  member_counts as (
+    select rm.room_id, count(*) as member_count
+    from public.room_members rm
+    where rm.room_id in (select room_id from my_rooms)
+    group by rm.room_id
+  ),
+  member_names as (
+    select rm.room_id, array_agg(p.display_name order by rm.joined_at) as names
+    from public.room_members rm
+    join public.profiles p on p.id = rm.user_id
+    where rm.room_id in (select room_id from my_rooms)
+      and rm.user_id <> auth.uid()
+    group by rm.room_id
+  ),
+  last_msg as (
+    select distinct on (m.room_id) m.room_id, m.content, m.image_url, m.created_at
+    from public.messages m
+    where m.room_id in (select room_id from my_rooms) and m.deleted_at is null
+    order by m.room_id, m.created_at desc
+  )
+  select
+    mr.room_id,
+    ro.name,
+    mc.member_count,
+    coalesce(mn.names, array[]::text[]) as member_names,
+    coalesce(lm.content, case when lm.image_url is not null then '📷 画像' else null end) as last_message_preview,
+    lm.created_at as last_message_at
+  from my_rooms mr
+  join public.rooms ro on ro.id = mr.room_id
+  join member_counts mc on mc.room_id = mr.room_id
+  left join member_names mn on mn.room_id = mr.room_id
+  left join last_msg lm on lm.room_id = mr.room_id
+  order by lm.created_at desc nulls last
+$$;
+
+revoke execute on function public.get_group_conversation_list() from public;
+grant execute on function public.get_group_conversation_list() to authenticated;
+revoke execute on function public.get_group_conversation_list() from anon;

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { removeFriend } from "@/app/actions/friends";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
+import { CreateGroupPanel } from "./CreateGroupPanel";
 
 export type FriendshipStatus =
   | "accepted"
@@ -13,18 +14,43 @@ export type FriendshipStatus =
   | "rejected"
   | "none";
 
-export type ConversationItem = {
-  roomId: string;
-  otherUserId: string;
-  otherUsername: string;
-  otherDisplayName: string;
-  otherAvatarUrl: string | null;
-  friendshipStatus: FriendshipStatus;
-  lastMessagePreview: string | null;
-  lastMessageAt: string | null;
-  isTemporary: boolean;
-  expiresAt: string | null;
-};
+// Phase 19: グループチャットUI M1。DM一覧・グループ一覧を同じ配列で扱うため
+// 判別共用体にした（`kind`で分岐）。
+export type ConversationItem =
+  | {
+      kind: "dm";
+      roomId: string;
+      otherUserId: string;
+      otherUsername: string;
+      otherDisplayName: string;
+      otherAvatarUrl: string | null;
+      friendshipStatus: FriendshipStatus;
+      lastMessagePreview: string | null;
+      lastMessageAt: string | null;
+      isTemporary: boolean;
+      expiresAt: string | null;
+    }
+  | {
+      kind: "group";
+      roomId: string;
+      groupName: string | null;
+      memberNames: string[];
+      memberCount: number;
+      lastMessagePreview: string | null;
+      lastMessageAt: string | null;
+    };
+
+function isDmConversation(
+  item: ConversationItem,
+): item is Extract<ConversationItem, { kind: "dm" }> {
+  return item.kind === "dm";
+}
+
+function isGroupConversation(
+  item: ConversationItem,
+): item is Extract<ConversationItem, { kind: "group" }> {
+  return item.kind === "group";
+}
 
 const FRIENDSHIP_BADGE: Partial<Record<FriendshipStatus, string>> = {
   pending_sent: "申請中",
@@ -72,7 +98,7 @@ function ConversationRow({
   onRemoveFriend,
   removingUserId,
 }: {
-  item: ConversationItem;
+  item: Extract<ConversationItem, { kind: "dm" }>;
   onRemoveFriend: (userId: string, displayName: string) => void;
   removingUserId: string | null;
 }) {
@@ -129,6 +155,40 @@ function ConversationRow({
   );
 }
 
+// Phase 19: グループチャットUI M1。DM用ConversationRowと違い「相手1人」の
+// プロフィール情報が無いため、グループ名 or メンバー名の連結＋人数バッジで表示する。
+// メンバー管理（追加・削除・退出）UIはM1スコープ外のため「解除」相当のボタンは無い。
+function GroupConversationRow({ item }: { item: ConversationItem & { kind: "group" } }) {
+  const displayName =
+    item.groupName ?? item.memberNames.join("、") ?? "グループ";
+
+  return (
+    <Link
+      href={`/chat/${item.roomId}`}
+      className="flex min-w-0 flex-1 items-center gap-3 px-6 py-4 transition-colors hover:bg-surface-raised"
+    >
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
+        {(item.groupName?.slice(0, 1) ?? item.memberNames[0]?.slice(0, 1)) ||
+          "G"}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="truncate font-medium text-ink">{displayName}</p>
+          <span className="shrink-0 rounded-full border border-band px-1.5 py-0.5 font-label text-[10px] text-ink-muted">
+            {item.memberCount}人
+          </span>
+        </div>
+        <p className="truncate text-sm text-ink-muted">
+          {item.lastMessagePreview ?? "まだメッセージがありません"}
+        </p>
+      </div>
+      <span className="shrink-0 text-[10px] text-ink-muted">
+        {formatRelativeTime(item.lastMessageAt)}
+      </span>
+    </Link>
+  );
+}
+
 type TabKey = "friends" | "strangers" | "group";
 
 function TabButton({
@@ -166,14 +226,16 @@ function TabButton({
 
 /**
  * ホーム画面の「フレンド／ストレンジャー／グループ」タブ（SRS 3.2.1）。
- * 「検索」タブはAddUserPanelがユーザー追加パネルとして兼ねているため統合し、
- * グループチャットUIはPhase未割り当て（CLAUDE.md参照）のためプレースホルダーとする。
+ * 「検索」タブはAddUserPanelがユーザー追加パネルとして兼ねているため統合。
  *
  * Phase 8: `app/actions/friends.ts`のremoveFriendはPhase 5から実装済みだったが
  * 呼び出すUIが無かったため、フレンド行に「解除」ボタンを追加した。一覧の更新は
  * AddUserPanel.tsxの他のハンドラと同じくrouter.refresh()で行う（このコンポーネント
  * 自身はconversationsをローカルstateへ複製せず、親から渡されたpropsをそのまま使う設計の
  * ため）。
+ *
+ * Phase 19: グループチャットUI M1。グループタブを有効化し、検索欄の代わりに
+ * 「＋ グループを作成」ボタン→CreateGroupPanelの開閉を配置する。
  */
 export function HomeTabs({
   conversations,
@@ -186,29 +248,33 @@ export function HomeTabs({
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [createGroupOpen, setCreateGroupOpen] = useState(false);
   const router = useRouter();
 
-  const friends = conversations.filter(
+  const dmConversations = conversations.filter(isDmConversation);
+  const groupConversations = conversations.filter(isGroupConversation);
+
+  const friends = dmConversations.filter(
     (c) => c.friendshipStatus === "accepted",
   );
-  const strangers = conversations.filter(
+  const strangers = dmConversations.filter(
     (c) => c.friendshipStatus !== "accepted",
   );
 
-  const items =
-    tab === "friends" ? friends : tab === "strangers" ? strangers : [];
+  const items: ConversationItem[] =
+    tab === "friends" ? friends : tab === "strangers" ? strangers : groupConversations;
 
   // FR-14: フレンド・ストレンジャー一覧内の検索（AddUserPanel.tsxの新規ユーザー追加検索＝
-  // FR-15とは別物）。会話履歴が無いグループメンバーを追加で検索対象にするオプションは、
-  // 複数人グループチャット自体が未実装のため今回は対象外（CLAUDE.md参照）。
+  // FR-15とは別物）。グループタブでは検索欄自体を表示しないため対象外。
   const normalizedQuery = query.trim().toLowerCase();
   const filteredItems =
     normalizedQuery.length === 0
       ? items
-      : items.filter(
-          (item) =>
-            item.otherDisplayName.toLowerCase().includes(normalizedQuery) ||
-            item.otherUsername.toLowerCase().includes(normalizedQuery),
+      : items.filter((item) =>
+          isDmConversation(item)
+            ? item.otherDisplayName.toLowerCase().includes(normalizedQuery) ||
+              item.otherUsername.toLowerCase().includes(normalizedQuery)
+            : false,
         );
 
   function handleRemoveFriend(userId: string, displayName: string) {
@@ -250,9 +316,9 @@ export function HomeTabs({
         />
         <TabButton
           label="グループ"
+          count={groupConversations.length}
           active={tab === "group"}
           onClick={() => setTab("group")}
-          disabled
         />
       </div>
 
@@ -269,6 +335,23 @@ export function HomeTabs({
         </div>
       )}
 
+      {!loadError && tab === "group" && (
+        <div className="px-6 py-2">
+          <button
+            type="button"
+            onClick={() => setCreateGroupOpen((prev) => !prev)}
+            className="w-full rounded-lg border border-band px-3 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-raised"
+          >
+            {createGroupOpen ? "閉じる" : "＋ グループを作成"}
+          </button>
+          {createGroupOpen && (
+            <div className="mt-2">
+              <CreateGroupPanel onClose={() => setCreateGroupOpen(false)} />
+            </div>
+          )}
+        </div>
+      )}
+
       {removeError && (
         <p className="px-6 py-2 text-xs text-clay" role="alert">
           {removeError}
@@ -280,15 +363,13 @@ export function HomeTabs({
           <p className="px-6 py-8 text-center text-sm text-clay" role="alert">
             読み込みに失敗しました。再読み込みしてください。
           </p>
-        ) : tab === "group" ? (
-          <p className="px-6 py-8 text-center text-sm text-ink-muted">
-            グループチャットは準備中です。
-          </p>
         ) : items.length === 0 ? (
           <p className="px-6 py-8 text-center text-sm text-ink-muted">
             {tab === "friends"
               ? "まだフレンドとの会話がありません。"
-              : "まだストレンジャーとの会話がありません。"}
+              : tab === "strangers"
+                ? "まだストレンジャーとの会話がありません。"
+                : "まだグループチャットがありません。"}
           </p>
         ) : filteredItems.length === 0 ? (
           <p className="px-6 py-8 text-center text-sm text-ink-muted">
@@ -298,11 +379,15 @@ export function HomeTabs({
           <ul className="divide-y divide-band/60">
             {filteredItems.map((item) => (
               <li key={item.roomId}>
-                <ConversationRow
-                  item={item}
-                  onRemoveFriend={handleRemoveFriend}
-                  removingUserId={removingUserId}
-                />
+                {isDmConversation(item) ? (
+                  <ConversationRow
+                    item={item}
+                    onRemoveFriend={handleRemoveFriend}
+                    removingUserId={removingUserId}
+                  />
+                ) : (
+                  <GroupConversationRow item={item} />
+                )}
               </li>
             ))}
           </ul>

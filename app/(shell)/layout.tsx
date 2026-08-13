@@ -57,17 +57,24 @@ export default async function ShellLayout({
     );
   }
 
-  const [profileResult, conversationsResult, requestsResult, blocksResult] =
-    await Promise.all([
-      supabase
-        .from("profiles")
-        .select("display_name")
-        .eq("id", user.id)
-        .single(),
-      supabase.rpc("get_conversation_list"),
-      supabase.rpc("get_friend_requests"),
-      supabase.from("blocks").select("blocked_id").eq("blocker_id", user.id),
-    ]);
+  const [
+    profileResult,
+    conversationsResult,
+    requestsResult,
+    blocksResult,
+    groupConversationsResult,
+  ] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select("display_name")
+      .eq("id", user.id)
+      .single(),
+    supabase.rpc("get_conversation_list"),
+    supabase.rpc("get_friend_requests"),
+    supabase.from("blocks").select("blocked_id").eq("blocker_id", user.id),
+    // Phase 19: グループチャットUI M1
+    supabase.rpc("get_group_conversation_list"),
+  ]);
 
   // Phase 8: 各クエリいずれかが失敗した場合、空状態と見分けが付かなくなることを防ぐため
   // 明示的にエラーフラグを立ててHomeTabsまで伝播させる。
@@ -75,13 +82,15 @@ export default async function ShellLayout({
     profileResult.error ||
       conversationsResult.error ||
       requestsResult.error ||
-      blocksResult.error,
+      blocksResult.error ||
+      groupConversationsResult.error,
   );
 
   const displayName = profileResult.data?.display_name ?? user.email ?? "Tiliqua";
 
   const conversations: ConversationItem[] = (conversationsResult.data ?? []).map(
     (row) => ({
+      kind: "dm" as const,
       roomId: row.room_id,
       otherUserId: row.other_user_id,
       otherUsername: row.other_username,
@@ -94,6 +103,18 @@ export default async function ShellLayout({
       expiresAt: row.expires_at ?? null,
     }),
   );
+
+  const groupConversations: ConversationItem[] = (
+    groupConversationsResult.data ?? []
+  ).map((row) => ({
+    kind: "group" as const,
+    roomId: row.room_id,
+    groupName: row.name ?? null,
+    memberNames: row.member_names ?? [],
+    memberCount: row.member_count,
+    lastMessagePreview: row.last_message_preview ?? null,
+    lastMessageAt: row.last_message_at ?? null,
+  }));
 
   const friendRequests: FriendRequestItem[] = (requestsResult.data ?? []).map(
     (row) => ({
@@ -141,7 +162,10 @@ export default async function ShellLayout({
               initialRequests={friendRequests}
               initialBlockedUsers={blockedUsers}
             />
-            <HomeTabs conversations={conversations} loadError={loadError} />
+            <HomeTabs
+              conversations={[...conversations, ...groupConversations]}
+              loadError={loadError}
+            />
           </>
         }
       >

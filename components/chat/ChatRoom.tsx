@@ -3,6 +3,7 @@
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useTransition,
@@ -81,15 +82,28 @@ function formatDateDividerLabel(iso: string) {
   });
 }
 
+// Phase 19: グループチャットUI M1。「相手」を単一のDM相手だけでなく複数人の
+// グループメンバーも表せるよう判別共用体にした（従来の`otherUser`から`peer`へ改名。
+// 複数人を表すのに"other user"は単数感が強すぎるため）。
+export type ChatPeer =
+  | {
+      kind: "dm";
+      id: string;
+      username: string;
+      displayName: string;
+      avatarUrl: string | null;
+    }
+  | {
+      kind: "group";
+      roomName: string | null;
+      memberCount: number;
+      members: { id: string; displayName: string }[];
+    };
+
 type ChatRoomProps = {
   roomId: string;
   currentUserId: string;
-  otherUser: {
-    id: string;
-    username: string;
-    displayName: string;
-    avatarUrl: string | null;
-  };
+  peer: ChatPeer;
   initialMessages: MessageRow[];
   initialHasMore: boolean;
   initialIsBlockedByMe: boolean;
@@ -101,7 +115,7 @@ type ChatRoomProps = {
 export function ChatRoom({
   roomId,
   currentUserId,
-  otherUser,
+  peer,
   initialMessages,
   initialHasMore,
   initialIsBlockedByMe,
@@ -472,13 +486,16 @@ export function ChatRoom({
   }
 
   function handleToggleBlock() {
+    // Phase 19: グループチャットには1対1のブロック概念が無い（M1スコープ外）ため、
+    // このハンドラ自体グループ側からは呼ばれない（ボタンを非表示にしている）が、念のためガードする。
+    if (peer.kind !== "dm") return;
     setBlockError(null);
     const next = !isBlockedByMe;
     startBlockTransition(async () => {
       try {
         const result = next
-          ? await blockUser(otherUser.id)
-          : await unblockUser(otherUser.id);
+          ? await blockUser(peer.id)
+          : await unblockUser(peer.id);
 
         if (!result.success) {
           setBlockError(result.error);
@@ -504,38 +521,78 @@ export function ChatRoom({
     }
   }
 
+  // Phase 19: ブロックはDMのみの概念（グループには1対1のブロックUIが無いM1スコープの
+  // 制約）。isBlockedByMeを直接使っていた各所をこの派生値に置き換え、グループでは常に
+  // 送信可能な状態にする。
+  const blockGateActive = peer.kind === "dm" && isBlockedByMe;
+
+  // Phase 19: グループチャットで自分以外のメッセージに送信者名を表示するためのマップ。
+  const memberNameById = useMemo(
+    () =>
+      peer.kind === "group"
+        ? new Map(peer.members.map((m) => [m.id, m.displayName]))
+        : null,
+    [peer],
+  );
+
   const canSend =
     !sending &&
-    !isBlockedByMe &&
+    !blockGateActive &&
     (inputValue.trim().length > 0 || selectedFile !== null);
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-3 border-b border-band/60 px-4 py-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
-          {otherUser.displayName.slice(0, 1)}
+        {peer.kind === "dm" ? (
+          <>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
+              {peer.displayName.slice(0, 1)}
+            </div>
+            <div className="min-w-0">
+              <p className="truncate font-medium text-ink">
+                {peer.displayName}
+              </p>
+              <p className="truncate text-xs text-ink-muted">
+                @{peer.username}
+              </p>
+            </div>
+          </>
+        ) : (
+          // Phase 19: グループチャットのヘッダー。名前が無い場合はメンバー名の連結で代替する。
+          <>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
+              {(peer.roomName?.slice(0, 1) ??
+                peer.members[0]?.displayName.slice(0, 1)) ||
+                "G"}
+            </div>
+            <div className="min-w-0">
+              <p className="truncate font-medium text-ink">
+                {peer.roomName ??
+                  peer.members.map((m) => m.displayName).join("、")}
+              </p>
+              <p className="truncate text-xs text-ink-muted">
+                {peer.memberCount}人
+              </p>
+            </div>
+          </>
+        )}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {peer.kind === "dm" && (
+            <button
+              type="button"
+              onClick={handleToggleBlock}
+              disabled={blockPending}
+              className="rounded-lg border border-band px-3 py-1.5 text-xs text-ink-muted transition-colors hover:bg-surface-raised disabled:opacity-60"
+            >
+              {isBlockedByMe ? "ブロック解除" : "ブロック"}
+            </button>
+          )}
+          <ChatRoomOptionsMenu
+            roomId={roomId}
+            initialAuthRequired={initialAuthRequired}
+            isTemporary={isTemporary}
+          />
         </div>
-        <div className="min-w-0">
-          <p className="truncate font-medium text-ink">
-            {otherUser.displayName}
-          </p>
-          <p className="truncate text-xs text-ink-muted">
-            @{otherUser.username}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={handleToggleBlock}
-          disabled={blockPending}
-          className="ml-auto shrink-0 rounded-lg border border-band px-3 py-1.5 text-xs text-ink-muted transition-colors hover:bg-surface-raised disabled:opacity-60"
-        >
-          {isBlockedByMe ? "ブロック解除" : "ブロック"}
-        </button>
-        <ChatRoomOptionsMenu
-          roomId={roomId}
-          initialAuthRequired={initialAuthRequired}
-          isTemporary={isTemporary}
-        />
       </header>
       {blockError && (
         <p
@@ -606,6 +663,13 @@ export function ChatRoom({
                   <MessageBubble
                     message={message}
                     isOwn={message.sender_id === currentUserId}
+                    senderName={
+                      peer.kind === "group" &&
+                      message.sender_id !== currentUserId
+                        ? (memberNameById?.get(message.sender_id ?? "") ??
+                          "不明なメンバー")
+                        : undefined
+                    }
                     onDelete={handleDeleteMessage}
                     onHide={handleHideMessage}
                   />
@@ -662,7 +726,7 @@ export function ChatRoom({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={sending || isBlockedByMe}
+            disabled={sending || blockGateActive}
             aria-label="画像を添付"
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-band text-ink-muted transition-colors hover:bg-surface-raised disabled:opacity-60"
           >
@@ -686,10 +750,10 @@ export function ChatRoom({
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             rows={1}
-            disabled={isBlockedByMe}
+            disabled={blockGateActive}
             maxLength={MESSAGE_MAX_LENGTH}
             placeholder={
-              isBlockedByMe ? "ブロック中は送信できません" : "メッセージを入力"
+              blockGateActive ? "ブロック中は送信できません" : "メッセージを入力"
             }
             className="max-h-32 flex-1 resize-none overflow-y-auto rounded-lg border border-band bg-surface-raised px-3 py-2 text-ink outline-none focus-visible:border-tongue disabled:opacity-60"
           />

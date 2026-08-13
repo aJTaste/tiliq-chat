@@ -20,6 +20,27 @@ function mapDmError(message: string): string {
   return "DMの開始に失敗しました。時間をおいて再度お試しください。";
 }
 
+// Phase 19: グループチャットUI M1。create_group_room RPCが投げるraise exceptionの
+// メッセージをmapDmErrorと同じsubstringマッチング方式で日本語化する。
+function mapGroupError(message: string): string {
+  if (message.includes("at least 2 other members")) {
+    return "グループには自分以外に2人以上のメンバーが必要です。";
+  }
+  if (message.includes("group size limit exceeded")) {
+    return "グループの人数上限を超えています。";
+  }
+  if (message.includes("member not found")) {
+    return "選択したメンバーが見つかりませんでした。";
+  }
+  if (message.includes("blocked")) {
+    return "ブロック関係にあるメンバーが含まれているため作成できません。";
+  }
+  if (message.includes("group name too long")) {
+    return "グループ名は50文字以内で入力してください。";
+  }
+  return "グループの作成に失敗しました。時間をおいて再度お試しください。";
+}
+
 /**
  * FR-20「各チャット」スコープ：このチャットに自分の追加認証を要求するかのトグル。
  * set_room_auth_required RPCで自分自身のroom_members行のauth_requiredのみ更新する
@@ -188,6 +209,52 @@ export async function startDirectMessageWithUser(
       error: rpcError
         ? mapDmError(rpcError.message)
         : "DMの開始に失敗しました。時間をおいて再度お試しください。",
+    };
+  }
+
+  redirect(`/chat/${roomId}`);
+}
+
+/**
+ * Phase 19: グループチャットUI M1。検索・複数選択したメンバーIDでグループルームを新規作成する。
+ * 自分自身の除外・重複除去はここでも行うが（create_group_room RPCも同様のチェックを持つ多層防御）、
+ * 「2人未満」はここで早期returnすることでRPC呼び出し自体を省略できる。
+ */
+export async function createGroupRoom(
+  memberIds: string[],
+  name?: string,
+): Promise<StartDmState> {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  const uniqueOthers = Array.from(new Set(memberIds)).filter(
+    (id) => id !== user.id,
+  );
+
+  if (uniqueOthers.length < 2) {
+    return { error: "グループには自分以外に2人以上のメンバーが必要です。" };
+  }
+
+  const { data: roomId, error: rpcError } = await supabase.rpc(
+    "create_group_room",
+    {
+      p_member_ids: uniqueOthers,
+      p_name: name?.trim() ? name.trim() : undefined,
+    },
+  );
+
+  if (rpcError || !roomId) {
+    return {
+      error: rpcError
+        ? mapGroupError(rpcError.message)
+        : "グループの作成に失敗しました。時間をおいて再度お試しください。",
     };
   }
 

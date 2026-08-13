@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { Tables } from "@/types/supabase";
-import { ChatRoom } from "@/components/chat/ChatRoom";
+import { ChatRoom, type ChatPeer } from "@/components/chat/ChatRoom";
 
 type MessageRow = Tables<"messages">;
 
@@ -11,12 +11,7 @@ const PAGE_SIZE = 30;
 
 type LoadedState = {
   status: "ready";
-  otherUser: {
-    id: string;
-    username: string;
-    displayName: string;
-    avatarUrl: string | null;
-  };
+  peer: ChatPeer;
   initialMessages: MessageRow[];
   initialHasMore: boolean;
   initialIsBlockedByMe: boolean;
@@ -27,16 +22,19 @@ type LoadedState = {
  * FR-20「各チャット」スコープでロックされた部屋専用の読み込み経路。
  * AuthGateで解錠されるまで、相手のプロフィール・メッセージ本体はサーバーから
  * 取得しない（RSCペイロードへの解錠前データ混入を避けるため）。
- * app/chat/[roomId]/page.tsxの非ゲート時の取得ロジックと同等の内容をクライアント側で行う。
+ * app/(shell)/chat/[roomId]/page.tsxの非ゲート時の取得ロジックと同等の内容をクライアント側で行う。
+ * Phase 19: isGroupにより、DM（相手1人）とグループ（複数人）で取得方法を分岐する。
  */
 export function GatedChatRoomLoader({
   roomId,
   currentUserId,
   isTemporary,
+  isGroup,
 }: {
   roomId: string;
   currentUserId: string;
   isTemporary: boolean;
+  isGroup: boolean;
 }) {
   const [state, setState] = useState<
     { status: "loading" } | { status: "error" } | LoadedState
@@ -46,7 +44,78 @@ export function GatedChatRoomLoader({
     const supabase = createClient();
     let cancelled = false;
 
-    async function load() {
+    async function loadGroup() {
+      const { data: memberRows } = await supabase
+        .from("room_members")
+        .select("user_id")
+        .eq("room_id", roomId);
+
+      if (!memberRows) {
+        if (!cancelled) setState({ status: "error" });
+        return;
+      }
+
+      const allMemberIds = memberRows.map((row) => row.user_id);
+
+      const [{ data: room }, { data: memberProfiles }] = await Promise.all([
+        supabase.from("rooms").select("name").eq("id", roomId).single(),
+        supabase
+          .from("profiles")
+          .select("id, display_name")
+          .in("id", allMemberIds),
+      ]);
+
+      const members = (memberProfiles ?? [])
+        .filter((p) => p.id !== currentUserId)
+        .map((p) => ({ id: p.id, displayName: p.display_name }));
+
+      const [
+        { data: initialMessagesDesc, error: messagesError },
+        { data: hiddenRows },
+      ] = await Promise.all([
+        supabase
+          .from("messages")
+          .select("*")
+          .eq("room_id", roomId)
+          .is("deleted_at", null)
+          .order("created_at", { ascending: false })
+          .limit(PAGE_SIZE),
+        supabase
+          .from("message_hidden")
+          .select("message_id, messages!inner(room_id)")
+          .eq("user_id", currentUserId)
+          .eq("messages.room_id", roomId),
+      ]);
+
+      if (messagesError) {
+        if (!cancelled) setState({ status: "error" });
+        return;
+      }
+
+      const initialMessages = [...(initialMessagesDesc ?? [])].reverse();
+      const initialHasMore = (initialMessagesDesc?.length ?? 0) === PAGE_SIZE;
+      const initialHiddenMessageIds = (hiddenRows ?? []).map(
+        (row) => row.message_id,
+      );
+
+      if (!cancelled) {
+        setState({
+          status: "ready",
+          peer: {
+            kind: "group",
+            roomName: room?.name ?? null,
+            memberCount: allMemberIds.length,
+            members,
+          },
+          initialMessages,
+          initialHasMore,
+          initialIsBlockedByMe: false,
+          initialHiddenMessageIds,
+        });
+      }
+    }
+
+    async function loadDm() {
       const { data: otherMember } = await supabase
         .from("room_members")
         .select("user_id")
@@ -116,7 +185,8 @@ export function GatedChatRoomLoader({
       if (!cancelled) {
         setState({
           status: "ready",
-          otherUser: {
+          peer: {
+            kind: "dm",
             id: otherProfile.id,
             username: otherProfile.username,
             displayName: otherProfile.display_name,
@@ -130,11 +200,11 @@ export function GatedChatRoomLoader({
       }
     }
 
-    void load();
+    void (isGroup ? loadGroup() : loadDm());
     return () => {
       cancelled = true;
     };
-  }, [roomId, currentUserId]);
+  }, [roomId, currentUserId, isGroup]);
 
   if (state.status === "loading") {
     return <p className="px-6 py-8 text-sm text-ink-muted">読み込み中...</p>;
@@ -152,7 +222,7 @@ export function GatedChatRoomLoader({
     <ChatRoom
       roomId={roomId}
       currentUserId={currentUserId}
-      otherUser={state.otherUser}
+      peer={state.peer}
       initialMessages={state.initialMessages}
       initialHasMore={state.initialHasMore}
       initialIsBlockedByMe={state.initialIsBlockedByMe}

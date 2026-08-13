@@ -19,11 +19,13 @@ const LONG_PRESS_MS = 500;
 export function MessageBubble({
   message,
   isOwn,
+  senderName,
   onDelete,
   onHide,
 }: {
   message: MessageRow;
   isOwn: boolean;
+  senderName?: string;
   onDelete?: (messageId: string) => void;
   onHide?: (messageId: string) => void;
 }) {
@@ -121,6 +123,12 @@ export function MessageBubble({
             isOwn ? "bg-tongue text-white" : "bg-surface-raised text-ink"
           }`}
         >
+          {/* Phase 19: グループチャットの他人のメッセージにのみ送信者名を表示する */}
+          {!isOwn && senderName && (
+            <p className="mb-0.5 text-[10px] font-medium text-ink-muted">
+              {senderName}
+            </p>
+          )}
           {message.content && (
             <p className="whitespace-pre-wrap break-words">
               {message.content}

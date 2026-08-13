@@ -1023,13 +1023,82 @@ CLAUDE.md「次にやること（Phase 18・未確定）」候補6。Phase 17で
 - `rm -rf .next && npm run build`（クリーンビルド成功）
 - 実機確認（起動時ゲートON・`auth_scope_hidden_list`OFFの状態で`/chat/[roomId]/hidden`に直接URLアクセスし、認証プロンプトが出ることの確認）はユーザー待ち
 
+## Phase 19 の実装内容・詳細
+
+CLAUDE.md「次にやること（Phase 18・未確定）」候補3。Phase 16で詳細設計まで完了していたグループチャットUI（FR-4）のM1（最小スコープ）を実装した。ブロッカーだったナビゲーション刷新（永続サイドバーシェル）はPhase 17で解消済み。ユーザーから「最適だと思う順番で進めてください」との指示を受け、バックログの中で最も準備が整っていた本項目を選んで着手した。
+
+M1のスコープ：グループ作成（検索から複数選択）・グループ一覧表示（ホーム「グループ」タブ）・グループチャット内でのメッセージ送受信（送信者名表示）。メンバー追加・削除・退出・オーナー譲渡等の管理機能、既存DM専用RPC・RLS・`messages_insert_member_not_blocked`ポリシーの変更は明示的にスコープ外。
+
+### スコープ判断（自己決定）
+
+1. **メンバー管理UI（追加・削除・退出）はM1に含めない。** `room_members`のRLSは既にowner/self操作を許容する設計だが、UIを足すと変更範囲が広がるため次回以降の課題とした
+2. **グループの最大人数に軽いソフトキャップ（合計50人＝招待49人まで）を設けた。** 要件に明記は無いが、無制限配列を許すのは工学的に不用意（誤操作・軽微なDoS的懸念）なため、`create_group_room`内でチェックする安全側のデフォルトとした
+3. **`CreateGroupPanel`は`AddUserPanel`より簡素（フレンド状態バッジなし、チェックボックス+検索のみ）とした。** M1の最小構成として妥当と判断
+
+### DB変更（`docs/schema.sql`に追記済み。実際の適用はSupabase MCP `apply_migration` "phase19_group_room_creation_m1"）
+
+新規RPC関数（既存パターン＝security definerでのアトミックINSERT、`revoke from public`→`grant to authenticated`→`revoke from anon`の三点セットを踏襲）：
+
+| 関数                                            | 用途                                                                                          |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `create_group_room(p_member_ids uuid[], p_name text)` | グループルーム新規作成。作成者以外に2人以上（合計3人以上）を要求し、作成者を含む全メンバー間の総当たりでブロック関係が1組でもあれば拒否する |
+| `get_group_conversation_list()`                 | ホーム「グループ」タブ用一覧取得。メンバー数・自分以外の全メンバー表示名配列・直近メッセージを返す |
+
+`types/supabase.ts`をSupabase MCPの`generate_typescript_types`で再生成し、上記2関数の型を反映済み。
+
+### 追加ファイル
+
+- `components/home/CreateGroupPanel.tsx` — グループ作成UI。`search_users` RPCを300msデバウンスで直接呼び出し、チェックボックスで複数選択→グループ名（任意）入力→作成。`AddUserPanel.tsx`と同じ`useTransition`+try/catch+`unstable_rethrow(err)`パターンを踏襲
+
+### 変更ファイル
+
+- `app/actions/rooms.ts` — `createGroupRoom(memberIds, name?)`を追加（`startDirectMessageWithUser`と同じ形：認証確認→バリデーション→RPC呼び出し→エラーマッピング→成功時`redirect`）。`mapGroupError`を新設
+- `components/chat/MessageBubble.tsx` — `senderName?: string`を追加。`!isOwn && senderName`の場合のみバブル内に送信者名ラベルを表示
+- `components/chat/ChatRoom.tsx` — `otherUser`単数propを`peer: ChatPeer`（`{kind:"dm",...} | {kind:"group",...}`の判別共用体、このファイルからexport）に変更。ブロック機能（DM専用の概念）は`blockGateActive = peer.kind === "dm" && isBlockedByMe`という派生値に置き換え、送信ボタン・画像添付ボタン・テキストエリアのdisabled・placeholderの計4箇所で使用。ヘッダーを`peer.kind`で分岐（グループはグループ名 or メンバー名連結＋人数表示、ブロックボタン無し）。グループの場合のみ`MessageBubble`へ`senderName`を渡す
+- `app/(shell)/chat/[roomId]/page.tsx` — `room.is_group`で完全に分岐。グループの場合は`room_members`→`profiles`の2段階クエリで全メンバー名を取得し（`room_members.user_id`は`profiles`への直接FKが無いためPostgRESTのネスト埋め込みが使えず、既存のDM側`otherMember`→`otherProfile`と同じ2段階パターンを踏襲）、`blocks`クエリは省略。`GatedChatRoomLoader`に`isGroup`propを追加
+- `components/chat/GatedChatRoomLoader.tsx` — 新規`isGroup`propで`loadGroup()`/`loadDm()`の2関数に分岐。ロジックはpage.tsxのグループ分岐と対称
+- `components/home/HomeTabs.tsx` — `ConversationItem`を`{kind:"dm",...} | {kind:"group",...}`の判別共用体に変更。型ガード`isDmConversation`/`isGroupConversation`を新設。「グループ」タブの`disabled`を解除し、固定の「準備中」表示を廃止。新規`GroupConversationRow`（グループ名 or メンバー名連結＋人数バッジ、「解除」ボタンは無し＝M1スコープ外）を追加。検索欄の代わりにグループタブでは「＋ グループを作成」ボタン→`CreateGroupPanel`の開閉を配置
+- `app/(shell)/layout.tsx` / `components/shell/GatedShellBody.tsx` — 既存の`Promise.all`バッチに`get_group_conversation_list`を追加し、DM会話に`kind:"dm"`を付与、グループ会話を`kind:"group"`としてマッピングして結合し`HomeTabs`へ渡す（ほぼ同一の機械的変更を両ファイルに適用）
+
+### 設計判断・学び
+
+- **`otherMember`をゲート判定より前の`Promise.all`に含めなかった判断（Phase 18）と同じ考え方で、グループ分岐もゲート判定の後に置いた。** ゲート中ユーザーへの無駄なDB往復を増やさないという既存の重要な性質を壊さないため
+- **`room_members.user_id`から`profiles`への直接FKが無いことを実装前に確認し、2段階クエリ（member_ids取得→`profiles.in()`）で対応した。** これは既存のDM側`otherMember`→`otherProfile`パターンと全く同じ制約であり、新しい問題ではない
+- **ブロックチェックは「作成者⇔招待メンバー」だけでなく「招待メンバー同士」も含む総当たりにした。** `search_users`は「検索者から見たブロック」しか除外しないため、招待メンバー同士のブロックは作成時点でDB側の`create_group_room`が検出しないと、作成直後に`messages_insert_member_not_blocked`RLSでグループ全体の送信が止まってしまう（Supabase MCPで実際にこのシナリオをトランザクション内でシミュレートし、正しく拒否されることを確認済み）
+- **`messages_insert_member_not_blocked`ポリシーは変更していない。** 「room内の他メンバーの誰か1人とでもブロック関係があれば送信不可」という設計のため、グループ作成後に誰か1人をブロックすると全体送信が止まる過剰に強い挙動は既知の制限としてM1では許容する（Phase 16時点から把握済み。見直すならM4以降）
+- **`ChatRoom.tsx`の`isBlockedByMe`は当初の想定（Plan agentの初稿）より1箇所多い、計4箇所で使われていた（画像添付ボタンのdisabledが漏れていた）。** 実ファイルを確認してから`blockGateActive`への置き換えを行い、見落としを防いだ
+- **`CreateGroupPanel`のエントリポイントは、サイドバー全体を触る新しいスロット追加ではなく、`HomeTabs.tsx`の「グループ」タブ本体内に配置した。** サイドバー内部UI再設計（「＋」新規作成メニュー等）は別のバックログ項目として残っており、M1ではその構想と競合しない最小限の統合にとどめた
+- **DB層の動作確認はSupabase MCPの`execute_sql`を使い、`begin; set local role authenticated; set local request.jwt.claims ...;`で実際のユーザーとして`create_group_room`/`get_group_conversation_list`を呼び出し、正常系・異常系（メンバー不足・招待メンバー間ブロック）・RLS（非メンバーには何も見えない）を実際に確認してからロールバック/クリーンアップした。** Phase 6の「RLSの挙動をトランザクション内でシミュレートして検証する」手法をそのまま踏襲した
+
+### 検証方法・実施内容
+
+- `npx tsc --noEmit`（エラー0件）
+- `npx eslint .`（エラー0件）
+- `rm -rf .next && npm run build`（クリーンビルド成功）
+- `get_advisors`（security・performance）を確認：新規追加した2関数は既存の全RPCと同じ`authenticated_security_definer_function_executable`の情報レベル警告のみで、新規の問題は無し
+- Supabase MCPの`execute_sql`でDB層を直接検証：
+  - 正常系（自分以外2人でグループ作成）→ 成功、`room_members`に owner+member×2 が正しく挿入されることを確認
+  - 異常系1（自分以外1人のみ）→ `group requires at least 2 other members`で拒否
+  - 異常系2（招待メンバー同士がブロック関係）→ `cannot create group: blocked member pair`で拒否（作成者⇔招待メンバーではなく招待メンバー同士のケースを明示的に検証）
+  - `get_group_conversation_list()`→ 自分以外のメンバー名配列・人数が正しく返ることを確認
+  - 非メンバーには`rooms`/`room_members`が一切見えないことを確認（既存RLSの継続動作確認）
+  - テストデータは全てロールバックまたは明示的な削除でクリーンアップ済み
+- 実機での一連のQA（グループ作成〜チャット〜一覧表示のUI操作）はユーザーによる実機確認待ち
+
+### 未対応・持ち越し事項（Phase 19時点）
+
+- メンバー管理UI（追加・削除・退出・オーナー譲渡）はM1スコープ外のまま。次回M-phase候補
+- `messages_insert_member_not_blocked`の「誰か1人ブロックで全体送信停止」という過剰に強い挙動は既知の制限として残置（M4以降で見直すか判断）
+- サイドバー内部UI再設計（「検索⇄一覧」トグル、「＋」新規作成メニューへのグループ・一時チャット作成統合）は引き続き別のバックログ項目のまま。今回`CreateGroupPanel`はHomeTabsの「グループ」タブ内に暫定配置した
+- グループの最大人数（合計50人）はエンジニアリング判断による暫定値。UI上に上限の明示は無い（送信時にサーバーエラーとして拒否されるのみ）
+
 ## 検討中のアイデア・未確定のPhase割り当て
 
 以下はPhase 4完了後の会話で出た検討事項で、Phase 5完了時点でも状況は大きく変わっていない。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミングで扱いを決めること。
 
 ### 1. どのPhaseにも未割り当てのSRS要件
 
-- **グループチャットUI（FR-4）：** DB・RLSはグループ対応済みだが、`app/(shell)/chat/[roomId]/page.tsx`・`get_conversation_list`はいずれも「DM相手1人」前提のまま実装されている。`HomeTabs`にグループタブの見た目だけは用意した（disabled）。**Phase 16でM1（最小スコープ）の詳細設計まで実施済み：** 新規RPC`create_group_room(p_member_ids uuid[], p_name text)`（`rooms.is_group=true`＋`room_members`への複数INSERTをアトミックに行う。作成者以外のメンバー2人以上を要求、ブロック関係のあるユーザーが含まれる場合はエラー）・`get_group_conversation_list()`（ホーム「グループ」タブ用一覧取得。メンバー数・直近メッセージを返す）を追加し、`app/(shell)/chat/[roomId]/page.tsx`・`components/chat/GatedChatRoomLoader.tsx`（`room.is_group`で分岐）・`components/chat/ChatRoom.tsx`（`otherUser`単数propを`{kind:"dm"|"group",...}`の判別共用体へ変更）・`components/chat/MessageBubble.tsx`（グループの他人のメッセージのみ`senderName`propを表示）・`components/home/HomeTabs.tsx`（グループタブ有効化）・新規`components/home/CreateGroupPanel.tsx`（検索結果の複数選択→作成）を変更/追加する設計。既存のDM専用RPC・RLS・`messages_insert_member_not_blocked`ポリシーは一切変更しない方針。**Phase 17でナビゲーション刷新M1（永続サイドバーシェル）が実装済みになったため、着手のブロッカーは解消した。** 次に着手する場合は、上記ファイルパスを`app/(shell)/`配下の現在の構成に合わせて読み替えること、`CreateGroupPanel`の置き場所をサイドバー（`ShellRow`の`sidebar`スロット）内に位置づけ直すことを確認してから進める。なお`messages_insert_member_not_blocked`ポリシーは「room内の他メンバーの誰か1人とでもブロック関係があれば送信不可」という設計のため、グループでは「メンバーの誰か1人をブロックしただけで全体送信が止まる」という、DMでは問題にならなかった過剰に強い挙動になる点も判明している（M1では現状維持、見直すならM4以降）
+- **グループチャットUI（FR-4）：** **Phase 19でM1（最小スコープ：グループ作成・一覧表示・メッセージ送受信＋送信者名表示）を実装済み。** 詳細は「Phase 19 の実装内容・詳細」参照。メンバー追加・削除・退出・オーナー譲渡等の管理UIは引き続き未実装（M1後の課題）。`messages_insert_member_not_blocked`ポリシーは「room内の他メンバーの誰か1人とでもブロック関係があれば送信不可」という設計のまま変更しておらず、グループでは「メンバーの誰か1人をブロックしただけで全体送信が止まる」という過剰に強い挙動が既知の制限として残っている（M1では現状維持、見直すならM4以降）
 - **テキスト送信失敗時の自動リトライ（SRS 3.4、最大3回）：** Phase 14で実装済み
 - **真の楽観的更新**（送信直後に仮IDで即座に表示 → サーバー確定後に差し替え）：Phase未割り当てのまま。体感速度に関わるため、Phase 7「低スペック最適化」とまとめるのが良さそうという話が出ている
 
@@ -1109,7 +1178,7 @@ Phase 17実装後の実機確認で、チャット切り替え時に約0.7秒の
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
 
-## ファイル構成（Phase 18時点）
+## ファイル構成（Phase 19時点）
 
 ```
 tiliq-chat/
@@ -1128,16 +1197,16 @@ tiliq-chat/
 │   ├── signup/page.tsx          # サインアップ画面（Phase 2）
 │   ├── settings/page.tsx        # 追加認証・通知・DM受信設定画面（Phase 6。Phase 7で通知設定・DM受信設定を統合。永続サイドバーシェルには含まれない独立ページ）
 │   ├── (shell)/                 # 永続サイドバーシェル（Phase 17・新規Route Group。URLには現れない）
-│   │   ├── layout.tsx           # サイドバー（AddUserPanel+HomeTabs）のデータ取得・起動時ゲート判定。`/home`・`/chat/[roomId]`間のクライアント遷移で再マウントされない
+│   │   ├── layout.tsx           # サイドバー（AddUserPanel+HomeTabs）のデータ取得・起動時ゲート判定。`/home`・`/chat/[roomId]`間のクライアント遷移で再マウントされない（Phase 19でget_group_conversation_listを統合）
 │   │   ├── home/page.tsx        # チャット未選択時のメインエリアのプレースホルダ（Phase 3〜16の実装はlayout.tsx/components/shell/へ移設済み。旧app/home/page.tsxから移動）
 │   │   └── chat/[roomId]/
-│   │       ├── page.tsx         # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得、Phase 17で起動時ゲートの独立チェックを追加＝直接URLバイパスの解消、Phase 18でDB問い合わせをPromise.allで並列化（4段階に圧縮）。旧app/chat/[roomId]/page.tsxから移動）
+│   │       ├── page.tsx         # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得、Phase 17で起動時ゲートの独立チェックを追加＝直接URLバイパスの解消、Phase 18でDB問い合わせをPromise.allで並列化（4段階に圧縮）、Phase 19でroom.is_groupによるグループ/DM分岐を追加。旧app/chat/[roomId]/page.tsxから移動）
 │   │       └── template.tsx     # roomId切り替え時の強制リマウント用（Phase 17・新規）
 │   ├── chat/[roomId]/hidden/page.tsx  # 非表示メッセージ一覧（Phase 6・新規。永続サイドバーシェルには含めない独立ページのまま。Phase 18で起動時ゲートの独立チェックを追加＝直接URLバイパスの解消、DB問い合わせをPromise.allで並列化）
 │   └── actions/
 │       ├── auth.ts              # signup/login/logout Server Actions（Phase 2）
 │       ├── auth-secret.ts       # 追加認証（PIN/キー）設定・検証系 Server Actions（Phase 6・新規）
-│       ├── rooms.ts             # startDirectMessageWithUser（Phase 5）+ toggleRoomAuthRequired/closeTempChat/startTemporaryDirectMessage（Phase 6）（Phase 8でデッドコードのstartDirectMessageを削除）
+│       ├── rooms.ts             # startDirectMessageWithUser（Phase 5）+ toggleRoomAuthRequired/closeTempChat/startTemporaryDirectMessage（Phase 6）（Phase 8でデッドコードのstartDirectMessageを削除、Phase 19でcreateGroupRoomを追加）
 │       ├── friends.ts           # フレンド申請系 Server Actions（Phase 5。removeFriendはPhase 8でHomeTabs.tsxから呼び出し開始）
 │       ├── blocks.ts            # ブロック系 Server Actions（Phase 5）
 │       ├── messages.ts          # deleteMessage/hideMessage/unhideMessage（Phase 6・新規）
@@ -1167,17 +1236,18 @@ tiliq-chat/
 │   │   └── InstallPrompt.tsx           # PWAインストール導線（beforeinstallprompt+iOSフォールバック）
 │   ├── shell/                   # Phase 17・新規ディレクトリ（永続サイドバーシェル本体）
 │   │   ├── ShellRow.tsx         # サイドバー/メインのmd:分割。useSelectedLayoutSegmentでモバイル幅の表示切替を判定
-│   │   ├── GatedShellBody.tsx   # 起動時ゲート有効時のクライアント側取得＋描画（旧components/home/HomeContent.tsxのGatedHomeBodyを移設・拡張。childrenも受け取る）
+│   │   ├── GatedShellBody.tsx   # 起動時ゲート有効時のクライアント側取得＋描画（旧components/home/HomeContent.tsxのGatedHomeBodyを移設・拡張。childrenも受け取る。Phase 19でget_group_conversation_listを統合）
 │   │   └── ShellFriendshipsSync.tsx  # 非ゲート時のfriendships Realtime購読（旧HomeContent.tsxの該当effectを移設）
 │   ├── chat/
-│   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6。Phase 8でtry/catch化・空状態・日付区切り等のUX修正、Phase 14でテキスト送信の自動リトライ（SRS 3.4）、Phase 17でルート要素をh-screenからh-full flex-1へ変更）
-│   │   ├── MessageBubble.tsx        # メッセージ表示・長押し/右クリックメニュー（Phase 3/4/6。Phase 8で画像alt修正、Phase 9でキーボード操作対応を追加）
+│   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6。Phase 8でtry/catch化・空状態・日付区切り等のUX修正、Phase 14でテキスト送信の自動リトライ（SRS 3.4）、Phase 17でルート要素をh-screenからh-full flex-1へ変更、Phase 19でotherUser単数propをpeer: ChatPeer判別共用体へ変更しグループ対応）
+│   │   ├── MessageBubble.tsx        # メッセージ表示・長押し/右クリックメニュー（Phase 3/4/6。Phase 8で画像alt修正、Phase 9でキーボード操作対応を追加、Phase 19でsenderName propを追加）
 │   │   ├── ChatRoomOptionsMenu.tsx  # チャットオプションメニュー（Phase 6・新規。Phase 8でtry/catch化・確認ダイアログ追加）
-│   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規。Phase 8でメッセージ取得エラー処理を追加、Phase 18でDB問い合わせをPromise.allで並列化）
+│   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規。Phase 8でメッセージ取得エラー処理を追加、Phase 18でDB問い合わせをPromise.allで並列化、Phase 19でisGroup propによるグループ/DM分岐を追加）
 │   │   └── HiddenMessagesList.tsx   # 非表示メッセージ一覧本体（Phase 6・新規。Phase 8でtry/catch化・画像alt修正）
 │   └── home/                    # Phase 5・新規ディレクトリ
-│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ・一時チャットバッジ（Phase 5/6。Phase 8でフレンド解除ボタン・取得エラー表示、Phase 9でFR-14検索フィルタ・レスポンシブレイアウト対応を追加。中身はPhase 17でも無変更のままシェルのsidebarスロットへ移設）
-│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック・一時チャット期限選択（Phase 5/6。Phase 8でtry/catch化・ESLintエラー解消・検索0件表示、Phase 9でFR-15レスポンシブ配置（PCサイドバー/スマホボトムバー）、Phase 13でPC常時展開、Phase 16で検索結果のレイアウト崩れ・申請中メッセージボタン消失を修正。中身はPhase 17でも無変更）
+│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ・一時チャットバッジ（Phase 5/6。Phase 8でフレンド解除ボタン・取得エラー表示、Phase 9でFR-14検索フィルタ・レスポンシブレイアウト対応を追加。中身はPhase 17でも無変更のままシェルのsidebarスロットへ移設。Phase 19でConversationItemを判別共用体化しグループタブを有効化、CreateGroupPanelへの導線を追加）
+│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック・一時チャット期限選択（Phase 5/6。Phase 8でtry/catch化・ESLintエラー解消・検索0件表示、Phase 9でFR-15レスポンシブ配置（PCサイドバー/スマホボトムバー）、Phase 13でPC常時展開、Phase 16で検索結果のレイアウト崩れ・申請中メッセージボタン消失を修正。中身はPhase 17・19でも無変更）
+│       ├── CreateGroupPanel.tsx # グループ作成UI（Phase 19・新規）。検索結果の複数選択→createGroupRoom呼び出し。HomeTabs.tsxの「グループ」タブ内から開く
 │       └── HomeHeader.tsx       # ホーム画面ヘッダー（ロゴ・ユーザー名・設定/ログアウト導線）（Phase 16・新規。Phase 17でapp/(shell)/layout.tsx・components/shell/GatedShellBody.tsxから呼ばれる形に変更）
 ├── types/
 │   └── supabase.ts              # Supabase生成型定義（Phase 3で導入、Phase 5/6で再生成）
@@ -1196,18 +1266,19 @@ tiliq-chat/
 
 （`components/chat/NewDmForm.tsx`はPhase 5で`AddUserPanel`に統合されたため削除済み。`components/home/StrangerDmToggle.tsx`はPhase 7で`NotificationSettingsForm`に統合されたため削除済み。`app/actions/rooms.ts`の`startDirectMessage`関数はPhase 8でデッドコードとして削除済み。`components/home/HomeContent.tsx`はPhase 17で`components/shell/`へ移設・分割されたため削除済み）
 
-## 次にやること（Phase 18・未確定）
+## 次にやること（Phase 19・未確定）
 
-**Phase 15をもって、現行スコープでの「一旦完成・既知の問題なし」という区切りに到達した。** ここから先は新機能・仕様変更のラウンドとして扱う（ユーザー自身の言葉：「とりあえず完成、一旦問題はない、という状態に持っていって、そこから今後、新機能や仕様変更等の作業をする」）。Phase 16でUIバグ3件を修正しつつナビゲーション構造刷新の構想が寄せられ、Phase 17でその構想をNext.js実物ドキュメントで裏取りしたうえでM1（永続サイドバーシェルの骨組み）まで実装した。**これによりグループチャットUIの実装着手を妨げていたブロッカーは解消した。**
+**Phase 15をもって、現行スコープでの「一旦完成・既知の問題なし」という区切りに到達した。** ここから先は新機能・仕様変更のラウンドとして扱う（ユーザー自身の言葉：「とりあえず完成、一旦問題はない、という状態に持っていって、そこから今後、新機能や仕様変更等の作業をする」）。Phase 16でUIバグ3件を修正しつつナビゲーション構造刷新の構想が寄せられ、Phase 17でその構想をNext.js実物ドキュメントで裏取りしたうえでM1（永続サイドバーシェルの骨組み）まで実装、Phase 18でチャット切り替え速度改善と起動時ゲートバイパス修正、Phase 19でグループチャットUI M1を実装した。
 
 以下は次ラウンドの候補（優先度未確定）。ユーザーから「許可不要で計画→実装を繰り返してよい、コミットも自由に行ってよい」との承認済み（2026-08-12）のため、次回セッションでは基本的にこのリストから妥当なものを選んで自律的に進めてよい：
 
 1. ~~ナビゲーション構造刷新M1（Phase 17実装分）の実機確認~~ → **実機確認済み（2026-08-13）。** 問題なし。ヘッダー非表示化・AuthGate位置調整も含めすべて確認完了
 2. ~~チャット切り替え時の体感速度改善（クエリ並列化）~~ → **Phase 18で対応済み（2026-08-13）。** `app/(shell)/chat/[roomId]/page.tsx`・`components/chat/GatedChatRoomLoader.tsx`の直列DB問い合わせを`Promise.all`で4段階に圧縮。詳細は「Phase 18 の実装内容・詳細」参照。実機での体感速度改善確認は次回ユーザー確認待ち。ヘッダー/入力欄を再読み込みしないSuspense分離案（`template.tsx`の強制リマウント設計との整合性検討が必要）は引き続き未着手・候補として残す
-3. **グループチャットUI（FR-4）M1の実装：** 「検討中のアイデア」節1.にPhase 16で完了した詳細設計を記録済み（Phase 17でのファイルパス変更を反映済み）。実装自体は他の候補より規模が大きく複数セッションに渡る見込みのため、着手する場合はまずスコープを1セッション分に区切ってから進めること。`CreateGroupPanel`（新規想定）の置き場所は`ShellRow`の`sidebar`スロット内に位置づける
-4. **サイドバー内部UIの再設計：** 「検討中のアイデア」節3.参照。「検索⇄一覧」のトグル切り替えUI、「＋」新規作成メニュー（グループ・一時チャット作成をここに統合する構想）。Phase 17では骨組みのみで、既存`AddUserPanel.tsx`/`HomeTabs.tsx`の中身は意図的に変更していない
+3. ~~グループチャットUI（FR-4）M1の実装~~ → **Phase 19で対応済み（2026-08-13）。** グループ作成・一覧表示・送信者名表示付きメッセージ送受信を実装。詳細は「Phase 19 の実装内容・詳細」参照。DB層は`execute_sql`での直接検証済み、実機でのUI操作確認は次回ユーザー確認待ち。メンバー管理UI（追加・削除・退出）は次のM-phase候補
+4. **サイドバー内部UIの再設計：** 「検討中のアイデア」節3.参照。「検索⇄一覧」のトグル切り替えUI、「＋」新規作成メニュー（グループ・一時チャット作成をここに統合する構想）。Phase 17では骨組みのみで、既存`AddUserPanel.tsx`/`HomeTabs.tsx`の中身は意図的に変更していない。Phase 19の`CreateGroupPanel`は暫定的に`HomeTabs.tsx`のグループタブ内に配置しており、本格的なサイドバー再設計時には置き場所を再検討する余地がある
 5. **実機フィードバックで見つかった小粒課題群：** 「検討中のアイデア」節4.参照（ホームへ戻るUI、一時チャットの命名・複数保持・チャット画面からの作成、スクロールバー、プロフィール概念、既読機能、タブUI統一方針）。優先度未確定のため、着手する場合はユーザーと相談のうえ妥当なものから選ぶ
 6. ~~`/chat/[roomId]/hidden/page.tsx`の起動時ゲートバイパス修正~~ → **Phase 18で対応済み（2026-08-13）。** 詳細は「Phase 18 の実装内容・詳細」内の該当節を参照。実機確認は次回ユーザー確認待ち
 7. **`eslint`（9→10）・`typescript`（6.0→7系）のメジャー更新の再挑戦：** Phase 16時点でも依然ブロック中（詳細は「Phase 16 の実装内容・詳細」参照）。ただしeslint側は`eslint-plugin-react`の対応PR #4022がマージ待ち段階まで進展済み。着手前に必ず`npm view eslint-plugin-react@latest version`・`npm view typescript-eslint peerDependencies`で状況を再確認し、実際に`npx eslint .`まで動かして検証してから確定すること
-8. **デプロイ（将来・ユーザー指示待ち）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。**ユーザーより明示的な指示済み（2026-08-12）：「デプロイは、私が指示しない限り行いません。数カ月後になると思います。」** 他の未実装機能が出揃った・地固めが済んだといった状況証拠だけでは着手判断とせず、自律的な計画→実装→コミットの承認範囲にもデプロイは含まれない。ユーザーから明示的な着手指示があるまでは、バックログに置いておくのみに留める
-9. **自動テスト基盤の導入：** Phase 15でユーザーに確認し、現時点では見送り・従来通りの手動QA運用継続で確定済み（`docs/srs.md` 3.9節にも運用実態を明記済み）。**この決定は蒸し返す必要はない。** グループチャットUI等の大規模な新機能実装に着手し、既存機能への影響範囲が広がるタイミングになって初めて、改めて要否を検討する候補として記録するに留める
+8. **グループチャットUI M2以降：** メンバー追加・削除・退出・オーナー譲渡等の管理UI、`messages_insert_member_not_blocked`の過剰に強いブロック挙動の見直し（Phase 19「未対応・持ち越し事項」参照）
+9. **デプロイ（将来・ユーザー指示待ち）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。**ユーザーより明示的な指示済み（2026-08-12）：「デプロイは、私が指示しない限り行いません。数カ月後になると思います。」** 他の未実装機能が出揃った・地固めが済んだといった状況証拠だけでは着手判断とせず、自律的な計画→実装→コミットの承認範囲にもデプロイは含まれない。ユーザーから明示的な着手指示があるまでは、バックログに置いておくのみに留める
+10. **自動テスト基盤の導入：** Phase 15でユーザーに確認し、現時点では見送り・従来通りの手動QA運用継続で確定済み（`docs/srs.md` 3.9節にも運用実態を明記済み）。**この決定は蒸し返す必要はない。** グループチャットUI M1が実装され既存機能への影響範囲が実際に広がったため、次回セッションで改めて要否を検討する候補として繰り上げてもよい
