@@ -69,21 +69,34 @@ export function GatedChatRoomLoader({
         return;
       }
 
-      const { data: myBlockOfOther } = await supabase
-        .from("blocks")
-        .select("id")
-        .eq("blocker_id", currentUserId)
-        .eq("blocked_id", otherProfile.id)
-        .maybeSingle();
-
-      const { data: initialMessagesDesc, error: messagesError } =
-        await supabase
+      // Phase 18: otherProfile確定後は以下3クエリが互いに独立している
+      // （blocksはotherProfile.idのみ、messages/message_hiddenはroomId/currentUserIdのみに
+      // 依存）ため、Promise.allでまとめて発行する（app/(shell)/chat/[roomId]/page.tsxの
+      // 非ゲート経路と同じ並列化）。
+      const [
+        { data: myBlockOfOther },
+        { data: initialMessagesDesc, error: messagesError },
+        { data: hiddenRows },
+      ] = await Promise.all([
+        supabase
+          .from("blocks")
+          .select("id")
+          .eq("blocker_id", currentUserId)
+          .eq("blocked_id", otherProfile.id)
+          .maybeSingle(),
+        supabase
           .from("messages")
           .select("*")
           .eq("room_id", roomId)
           .is("deleted_at", null)
           .order("created_at", { ascending: false })
-          .limit(PAGE_SIZE);
+          .limit(PAGE_SIZE),
+        supabase
+          .from("message_hidden")
+          .select("message_id, messages!inner(room_id)")
+          .eq("user_id", currentUserId)
+          .eq("messages.room_id", roomId),
+      ]);
 
       // Phase 8: メッセージ取得自体が失敗した場合、空のチャットとして
       // 表示してしまわないようotherProfile欠如時と同じエラー状態に合流させる
@@ -95,12 +108,6 @@ export function GatedChatRoomLoader({
 
       const initialMessages = [...(initialMessagesDesc ?? [])].reverse();
       const initialHasMore = (initialMessagesDesc?.length ?? 0) === PAGE_SIZE;
-
-      const { data: hiddenRows } = await supabase
-        .from("message_hidden")
-        .select("message_id, messages!inner(room_id)")
-        .eq("user_id", currentUserId)
-        .eq("messages.room_id", roomId);
 
       const initialHiddenMessageIds = (hiddenRows ?? []).map(
         (row) => row.message_id,

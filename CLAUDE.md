@@ -965,6 +965,47 @@ SRS本文には無い、Phase 16で持ち越された「ナビゲーション構
 - モバイルでチャット画面から一覧に戻るUIが無い問題（Phase 16由来のバックログ）は今回もスコープ外のまま
 - 「＋」新規作成メニュー導入時にはグループ・一時チャット作成UIの置き場所をサイドバー側へ統合する構想が残っている（CLAUDE.md「検討中のアイデア」節3.参照）
 
+## Phase 18 の実装内容・詳細
+
+CLAUDE.md「次にやること（Phase 18・未確定）」候補2、チャット切り替え時の体感速度改善に着手。Phase 17実機確認で判明していた「`app/(shell)/chat/[roomId]/page.tsx`が最大8回のDB問い合わせを直列`await`している」問題に対応。新機能・挙動変更は無く、DBクエリの発行順序・バッチングのみを変更する純粋なタイミング最適化。
+
+### 変更ファイル
+
+- `app/(shell)/chat/[roomId]/page.tsx`
+- `components/chat/GatedChatRoomLoader.tsx`（各チャットゲート有効時のクライアント側読み込み経路。同型の直列クエリを持っていたため同一コミットで対応）
+
+### 実装内容
+
+`app/(shell)/chat/[roomId]/page.tsx`の直列8ステップを、依存関係に基づき4段階に再編した（`app/(shell)/layout.tsx`で既に使われている`Promise.all`+分割代入のパターンをそのまま踏襲）：
+
+1. **Stage 1（`Promise.all`）：** `room`・`myMembership`・`settings`。いずれも`roomId`/`user.id`のみに依存し相互に独立
+2. **`needsGate`判定・早期return：** 無改修のまま。trueなら`<AuthGate><GatedChatRoomLoader/></AuthGate>`を返し、Stage 3以降のクエリは一切発行しない
+3. **Stage 2（単独）：** `otherMember`（`!needsGate`の場合のみ到達。あえてStage 1に含めなかった理由は後述）
+4. **Stage 3（単独、`otherMember`に依存）：** `otherProfile`（既存の三項演算子ロジックのまま）
+5. **Stage 4（`Promise.all`）：** `myBlockOfOther`・`initialMessagesDesc`・`hiddenRows`。`otherProfile.id`が要るのは`myBlockOfOther`のみだが、残り2つも一緒に発行して無駄がないためまとめた
+
+`components/chat/GatedChatRoomLoader.tsx`も同様に、`otherProfile`確定後の`myBlockOfOther`・`initialMessagesDesc`（`messagesError`分岐は維持）・`hiddenRows`の3クエリを`Promise.all`にまとめた。
+
+いずれのファイルも`notFound()`/`redirect()`/エラーフォールバック（`?? []`・`?? false`・`messagesError`分岐）の意味は一切変更していない。新たな`.error`チェックも導入していない（既存が全箇所`.data`のnullチェック/フォールバック方式のため、`layout.tsx`の`loadError`パターンをここに持ち込むのはスコープ外の挙動変更になるため見送った）。
+
+### 設計判断・学び
+
+- **`otherMember`をStage 1に含めなかった。** `otherMember`自体は`roomId`/`user.id`のみに依存しStage 1の3クエリと相互に独立しているため、技術的には一緒に束ねられる。しかしStage 1完了後の`needsGate`判定でゲート中と分かった場合、Stage 2以降（`otherMember`含む）は全く発行されないという既存の重要な性質（ゲート中ユーザーへの無駄なDB往復を増やさない。Phase 6以来の設計方針）がある。`otherMember`をStage 1に混ぜると、ゲート中でも常にこのクエリだけは発行されてしまう回帰になるため、あえてStage 2として`needsGate`チェックの後に残した。非ゲート成功パスで1ステップ分の並列化を諦める代わりに、ゲートパスの「余計な仕事をしない」という既存の重要な性質を守った
+- **`initialMessagesDesc`・`hiddenRows`をStage 2（`otherMember`）側に前倒ししなかった。** この2クエリは`otherProfile`に依存しないため理論上はStage 2〜3と並行実行できるが、(1) 現在の設計でも既にStage 4で`myBlockOfOther`と並行実行されており、Stage 4を早めても総待ち時間（ステージ数）は変わらない、(2) `otherMember`がnullで`notFound()`になる稀なケースで無駄なクエリ発行が増える、という2点から見送った。8→4段階が「これ以上詰めても意味が薄い」ポイントと判断した
+- **`GatedChatRoomLoader.tsx`側の軽微な非対称：** `messagesError`時に`hiddenRows`も無駄に取得されるようになった（`Promise.all`化により、エラー判定前に3クエリとも発行済みのため）。`myBlockOfOther`は元々messagesより先行して発行されていたため実質的な影響は`hiddenRows`のみ。エラー時のみに限られる軽微な話のため許容した
+
+### 検証方法・実施内容
+
+- `npx tsc --noEmit`（エラー0件）
+- `npx eslint .`（エラー0件）
+- `rm -rf .next && npm run build`（クリーンビルド成功）
+- 実機での体感速度改善確認・機能退行確認（非ゲートDM切り替え、ルーム個別ロック・起動時ゲート双方でのゲート短絡確認、`otherMember`欠如時の`notFound()`確認）はユーザーによる実機確認待ち
+
+### 未対応・持ち越し事項（Phase 18時点）
+
+- 上記「設計判断・学び」で検討した、Stage 2/4の境界をさらに動かす追加最適化は見送り済み（これ以上の並列化は費用対効果が薄いと判断）
+- 「検討中のアイデア」節5.で挙がっていたSuspenseによるヘッダー/入力欄の据え置き案（メッセージ一覧だけ遅延ストリーミング）は今回のスコープ外のまま。`template.tsx`の強制リマウント設計との整合性検討が必要（同節参照）
+
 ## 検討中のアイデア・未確定のPhase割り当て
 
 以下はPhase 4完了後の会話で出た検討事項で、Phase 5完了時点でも状況は大きく変わっていない。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミングで扱いを決めること。
@@ -1033,7 +1074,7 @@ Phase 16で、上記3.のヒアリング中に合わせて出てきた小粒な�
 
 Phase 17実装後の実機確認で、チャット切り替え時に約0.7秒の読み込み待ちが発生することが判明した（`npm run dev`での計測。`npm run build && npm run start`の本番相当ビルドでは改善したが、さらに高速化したいとの要望）。
 
-**判明した原因：** `app/(shell)/chat/[roomId]/page.tsx`が、最大8回のDB問い合わせ（`getUser`・`rooms`・自分の`room_members`・`user_settings`・相手の`room_members`・`profiles`・`blocks`・`messages`・`message_hidden`）を`Promise.all`で並列化せず直列に`await`している。`app/(shell)/layout.tsx`（サイドバー側）は最初から`Promise.all`で並列取得しているため、この非対称性が原因と見られる。**対応候補：** 依存関係の無いクエリ（後半の`blocks`/`messages`/`message_hidden`、前半の`rooms`/`room_members`/`user_settings`）を`Promise.all`でまとめれば8ステップの直列を4〜5段階に圧縮できる見込み。安全に切り出せる小さめの修正のため、次回セッションの候補として優先度高めで記録する
+**判明した原因：** `app/(shell)/chat/[roomId]/page.tsx`が、最大8回のDB問い合わせ（`getUser`・`rooms`・自分の`room_members`・`user_settings`・相手の`room_members`・`profiles`・`blocks`・`messages`・`message_hidden`）を`Promise.all`で並列化せず直列に`await`している。`app/(shell)/layout.tsx`（サイドバー側）は最初から`Promise.all`で並列取得しているため、この非対称性が原因と見られる。**→ Phase 18でクエリの並列化（4段階への圧縮）まで対応済み。** 詳細は「Phase 18 の実装内容・詳細」参照。実機での体感速度改善確認は引き続きユーザー待ち
 
 **ユーザーからの追加提案：** チャット切り替え時、ヘッダー（相手アイコン・名前・ブロックボタン・オプションメニュー）とメッセージ入力欄は実際にはほとんど変化しない部品のはずなのに、読み込み中は他の要素と一緒に消えてしまっている。React/Next.jsのSuspere（ストリーミング）を使い、軽いクエリで済むヘッダー用データ（相手のプロフィール）を先に描画し、重いメッセージ一覧だけ遅れて表示する分離ができるのではないか、という提案があった。
 
@@ -1051,7 +1092,7 @@ Phase 17実装後の実機確認で、チャット切り替え時に約0.7秒の
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
 
-## ファイル構成（Phase 17時点）
+## ファイル構成（Phase 18時点）
 
 ```
 tiliq-chat/
@@ -1073,7 +1114,7 @@ tiliq-chat/
 │   │   ├── layout.tsx           # サイドバー（AddUserPanel+HomeTabs）のデータ取得・起動時ゲート判定。`/home`・`/chat/[roomId]`間のクライアント遷移で再マウントされない
 │   │   ├── home/page.tsx        # チャット未選択時のメインエリアのプレースホルダ（Phase 3〜16の実装はlayout.tsx/components/shell/へ移設済み。旧app/home/page.tsxから移動）
 │   │   └── chat/[roomId]/
-│   │       ├── page.tsx         # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得、Phase 17で起動時ゲートの独立チェックを追加＝直接URLバイパスの解消。旧app/chat/[roomId]/page.tsxから移動）
+│   │       ├── page.tsx         # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得、Phase 17で起動時ゲートの独立チェックを追加＝直接URLバイパスの解消、Phase 18でDB問い合わせをPromise.allで並列化（4段階に圧縮）。旧app/chat/[roomId]/page.tsxから移動）
 │   │       └── template.tsx     # roomId切り替え時の強制リマウント用（Phase 17・新規）
 │   ├── chat/[roomId]/hidden/page.tsx  # 非表示メッセージ一覧（Phase 6・新規。永続サイドバーシェルには含めない独立ページのまま）
 │   └── actions/
@@ -1115,7 +1156,7 @@ tiliq-chat/
 │   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6。Phase 8でtry/catch化・空状態・日付区切り等のUX修正、Phase 14でテキスト送信の自動リトライ（SRS 3.4）、Phase 17でルート要素をh-screenからh-full flex-1へ変更）
 │   │   ├── MessageBubble.tsx        # メッセージ表示・長押し/右クリックメニュー（Phase 3/4/6。Phase 8で画像alt修正、Phase 9でキーボード操作対応を追加）
 │   │   ├── ChatRoomOptionsMenu.tsx  # チャットオプションメニュー（Phase 6・新規。Phase 8でtry/catch化・確認ダイアログ追加）
-│   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規。Phase 8でメッセージ取得エラー処理を追加）
+│   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規。Phase 8でメッセージ取得エラー処理を追加、Phase 18でDB問い合わせをPromise.allで並列化）
 │   │   └── HiddenMessagesList.tsx   # 非表示メッセージ一覧本体（Phase 6・新規。Phase 8でtry/catch化・画像alt修正）
 │   └── home/                    # Phase 5・新規ディレクトリ
 │       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ・一時チャットバッジ（Phase 5/6。Phase 8でフレンド解除ボタン・取得エラー表示、Phase 9でFR-14検索フィルタ・レスポンシブレイアウト対応を追加。中身はPhase 17でも無変更のままシェルのsidebarスロットへ移設）
@@ -1145,7 +1186,7 @@ tiliq-chat/
 以下は次ラウンドの候補（優先度未確定）。ユーザーから「許可不要で計画→実装を繰り返してよい、コミットも自由に行ってよい」との承認済み（2026-08-12）のため、次回セッションでは基本的にこのリストから妥当なものを選んで自律的に進めてよい：
 
 1. ~~ナビゲーション構造刷新M1（Phase 17実装分）の実機確認~~ → **実機確認済み（2026-08-13）。** 問題なし。ヘッダー非表示化・AuthGate位置調整も含めすべて確認完了
-2. **チャット切り替え時の体感速度改善：** 「検討中のアイデア」節5.参照。`app/(shell)/chat/[roomId]/page.tsx`の直列DB問い合わせ（最大8回）を`Promise.all`で並列化する対応が、小さく安全に着手できる最有力候補（本番ビルドで既に改善は確認済みだが、さらに詰めたいとの要望）。ヘッダー/入力欄を再読み込みしないSuspense分離案は`template.tsx`の強制リマウント設計との整合性検討が必要なため、着手する場合はまずクエリの並列化から
+2. ~~チャット切り替え時の体感速度改善（クエリ並列化）~~ → **Phase 18で対応済み（2026-08-13）。** `app/(shell)/chat/[roomId]/page.tsx`・`components/chat/GatedChatRoomLoader.tsx`の直列DB問い合わせを`Promise.all`で4段階に圧縮。詳細は「Phase 18 の実装内容・詳細」参照。実機での体感速度改善確認は次回ユーザー確認待ち。ヘッダー/入力欄を再読み込みしないSuspense分離案（`template.tsx`の強制リマウント設計との整合性検討が必要）は引き続き未着手・候補として残す
 3. **グループチャットUI（FR-4）M1の実装：** 「検討中のアイデア」節1.にPhase 16で完了した詳細設計を記録済み（Phase 17でのファイルパス変更を反映済み）。実装自体は他の候補より規模が大きく複数セッションに渡る見込みのため、着手する場合はまずスコープを1セッション分に区切ってから進めること。`CreateGroupPanel`（新規想定）の置き場所は`ShellRow`の`sidebar`スロット内に位置づける
 4. **サイドバー内部UIの再設計：** 「検討中のアイデア」節3.参照。「検索⇄一覧」のトグル切り替えUI、「＋」新規作成メニュー（グループ・一時チャット作成をここに統合する構想）。Phase 17では骨組みのみで、既存`AddUserPanel.tsx`/`HomeTabs.tsx`の中身は意図的に変更していない
 5. **実機フィードバックで見つかった小粒課題群：** 「検討中のアイデア」節4.参照（ホームへ戻るUI、一時チャットの命名・複数保持・チャット画面からの作成、スクロールバー、プロフィール概念、既読機能、タブUI統一方針）。優先度未確定のため、着手する場合はユーザーと相談のうえ妥当なものから選ぶ

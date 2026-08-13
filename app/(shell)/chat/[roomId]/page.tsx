@@ -22,40 +22,50 @@ export default async function ChatRoomPage({
     redirect("/login");
   }
 
-  const { data: room } = await supabase
-    .from("rooms")
-    .select("id, is_group, is_temporary")
-    .eq("id", roomId)
-    .maybeSingle();
+  // Phase 18: room/myMembership/settingsはいずれもroomId・user.idのみに依存し
+  // 相互に独立したクエリのため、Promise.allでまとめて発行する（体感速度改善）。
+  // otherMember以降は「起動時」ゲート判定（needsGate）の結果次第で丸ごとスキップされる
+  // ため、ここには含めない（ゲート中ユーザーへの無駄なDB往復を増やさないため）。
+  const [roomResult, myMembershipResult, settingsResult] = await Promise.all([
+    supabase
+      .from("rooms")
+      .select("id, is_group, is_temporary")
+      .eq("id", roomId)
+      .maybeSingle(),
+    // FR-20「各チャット」スコープ：自分がこの部屋に鍵をかけているか
+    // （room_members.auth_required、自分の行のみ。相手には影響しない個人設定）。
+    supabase
+      .from("room_members")
+      .select("auth_required")
+      .eq("room_id", roomId)
+      .eq("user_id", user.id)
+      .maybeSingle(),
+    // Phase 17: 「起動時」ゲート（user_settings.auth_scope_launch）を、このページ自身も
+    // 独立してチェックする。永続サイドバーシェル（app/(shell)/layout.tsx）側のAuthGateは
+    // UI表示（サイドバー）を守るだけで、Next.jsの仕様上「親がchildrenをJSXでどう扱うか」は
+    // children＝このページ自身のサーバー側データ取得までは止めない。そのため、ルーム個別の
+    // 鍵（auth_required）がオフでも起動時ゲートが有効なら、このページを直接URLで開かれた
+    // 場合に相手のプロフィール・メッセージが取得されてしまう抜け道が従来あった。
+    supabase
+      .from("user_settings")
+      .select("auth_scope_launch")
+      .eq("user_id", user.id)
+      .single(),
+  ]);
+
+  const room = roomResult.data;
 
   if (!room) {
     notFound();
   }
 
-  // FR-20「各チャット」スコープ：自分がこの部屋に鍵をかけているか
-  // （room_members.auth_required、自分の行のみ。相手には影響しない個人設定）。
-  const { data: myMembership } = await supabase
-    .from("room_members")
-    .select("auth_required")
-    .eq("room_id", roomId)
-    .eq("user_id", user.id)
-    .maybeSingle();
+  const myMembership = myMembershipResult.data;
 
   if (!myMembership) {
     notFound();
   }
 
-  // Phase 17: 「起動時」ゲート（user_settings.auth_scope_launch）を、このページ自身も
-  // 独立してチェックする。永続サイドバーシェル（app/(shell)/layout.tsx）側のAuthGateは
-  // UI表示（サイドバー）を守るだけで、Next.jsの仕様上「親がchildrenをJSXでどう扱うか」は
-  // children＝このページ自身のサーバー側データ取得までは止めない。そのため、ルーム個別の
-  // 鍵（auth_required）がオフでも起動時ゲートが有効なら、このページを直接URLで開かれた
-  // 場合に相手のプロフィール・メッセージが取得されてしまう抜け道が従来あった。
-  const { data: settings } = await supabase
-    .from("user_settings")
-    .select("auth_scope_launch")
-    .eq("user_id", user.id)
-    .single();
+  const settings = settingsResult.data;
 
   const launchGateEnabled = settings?.auth_scope_launch ?? false;
   const needsGate = launchGateEnabled || myMembership.auth_required;
@@ -108,34 +118,41 @@ export default async function ChatRoomPage({
     notFound();
   }
 
-  // blocks_select_ownのRLSにより、自分がブロックした相手かどうかのみ判定できる
-  // （相手が自分をブロックしているかは見えない設計。schema.sql参照）
-  const { data: myBlockOfOther } = await supabase
-    .from("blocks")
-    .select("id")
-    .eq("blocker_id", user.id)
-    .eq("blocked_id", otherProfile.id)
-    .maybeSingle();
+  // Phase 18: 以下3クエリはotherProfile確定後は互いに独立している
+  // （blocksはotherProfile.idのみ、messages/message_hiddenはroomId/user.idのみに依存）ため
+  // Promise.allでまとめて発行する。
+  const [blockResult, messagesResult, hiddenResult] = await Promise.all([
+    // blocks_select_ownのRLSにより、自分がブロックした相手かどうかのみ判定できる
+    // （相手が自分をブロックしているかは見えない設計。schema.sql参照）
+    supabase
+      .from("blocks")
+      .select("id")
+      .eq("blocker_id", user.id)
+      .eq("blocked_id", otherProfile.id)
+      .maybeSingle(),
+    supabase
+      .from("messages")
+      .select("*")
+      .eq("room_id", roomId)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .limit(PAGE_SIZE),
+    // FR-17: 自分がこのルームで非表示にしたメッセージのID一覧。ページングで古いメッセージを
+    // 読み込んだ場合もクライアント側でこの一覧を使ってフィルタするため、ルーム全体分を一括取得する。
+    supabase
+      .from("message_hidden")
+      .select("message_id, messages!inner(room_id)")
+      .eq("user_id", user.id)
+      .eq("messages.room_id", roomId),
+  ]);
 
-  const { data: initialMessagesDesc } = await supabase
-    .from("messages")
-    .select("*")
-    .eq("room_id", roomId)
-    .is("deleted_at", null)
-    .order("created_at", { ascending: false })
-    .limit(PAGE_SIZE);
+  const myBlockOfOther = blockResult.data;
 
+  const initialMessagesDesc = messagesResult.data;
   const initialMessages = [...(initialMessagesDesc ?? [])].reverse();
   const initialHasMore = (initialMessagesDesc?.length ?? 0) === PAGE_SIZE;
 
-  // FR-17: 自分がこのルームで非表示にしたメッセージのID一覧。ページングで古いメッセージを
-  // 読み込んだ場合もクライアント側でこの一覧を使ってフィルタするため、ルーム全体分を一括取得する。
-  const { data: hiddenRows } = await supabase
-    .from("message_hidden")
-    .select("message_id, messages!inner(room_id)")
-    .eq("user_id", user.id)
-    .eq("messages.room_id", roomId);
-
+  const hiddenRows = hiddenResult.data;
   const initialHiddenMessageIds = (hiddenRows ?? []).map((row) => row.message_id);
 
   return (
