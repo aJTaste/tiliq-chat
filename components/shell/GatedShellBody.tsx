@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { type ReactNode, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { AuthGate } from "@/components/auth/AuthGate";
 import { HomeHeader } from "@/components/home/HomeHeader";
+import { ShellRow } from "@/components/shell/ShellRow";
 import {
   AddUserPanel,
   type BlockedUserItem,
@@ -16,7 +15,7 @@ import {
   type FriendshipStatus,
 } from "@/components/home/HomeTabs";
 
-type HomeData = {
+type ShellData = {
   displayName: string;
   conversations: ConversationItem[];
   friendRequests: FriendRequestItem[];
@@ -25,16 +24,29 @@ type HomeData = {
 };
 
 /**
- * FR-20「起動時」スコープが有効なアカウント専用の読み込み経路。
- * AuthGateで解錠されるまで、プロフィール（ユーザー名）・会話一覧・フレンド申請・
- * ブロック一覧をRSCペイロードへ含めない（＝解錠前にサーバーから何も取得しない）ため、
- * 解錠後にブラウザから直接Supabaseを呼び出す。ヘッダー（HomeHeader）の描画も
- * ここに含めることで、ロック中は「誰のアカウントか」も「設定」への導線も一切
- * 表示されないようにしている（Phase 16。app/home/page.tsxがゲート有効時は
- * このコンポーネント以外を何も描画しないことと対になる設計）。
+ * FR-20「起動時」スコープが有効なアカウント専用の読み込み経路（旧
+ * components/home/HomeContent.tsxのGatedHomeBodyを、永続サイドバーシェル化に
+ * 合わせて移設・拡張したもの）。AuthGateで解錠されるまで、プロフィール
+ * （ユーザー名）・会話一覧・フレンド申請・ブロック一覧をRSCペイロードへ
+ * 含めない（＝解錠前にサーバーから何も取得しない）ため、解錠後にブラウザから
+ * 直接Supabaseを呼び出す。ヘッダー・サイドバーの描画もここに含めることで、
+ * ロック中は「誰のアカウントか」も「設定」への導線も、会話一覧も一切
+ * 表示されないようにしている。
+ *
+ * `children`（＝app/(shell)/home/page.tsxやapp/(shell)/chat/[roomId]/page.tsx
+ * が描画するメインコンテンツ）はこの解錠後経路の中でのみ画面に表示されるが、
+ * Next.jsの仕様上「親がchildrenをJSXでどう扱うか」はchildren自身のサーバー側
+ * データ取得を止めない。そのためルーム単位の起動時ゲートチェックは各page.tsx
+ * 側にも別途持たせている（app/(shell)/chat/[roomId]/page.tsx参照）。
  */
-function GatedHomeBody({ userId }: { userId: string }) {
-  const [data, setData] = useState<HomeData | null>(null);
+export function GatedShellBody({
+  userId,
+  children,
+}: {
+  userId: string;
+  children: ReactNode;
+}) {
+  const [data, setData] = useState<ShellData | null>(null);
   // Phase 10: friendshipsのRealtime変更を受けてload()を再実行するためのトリガー。
   // router.refresh()はServer Component側の保護データ取得（AuthGate解錠前は取得しない
   // 設計）をバイパスできないため、ここではこのキーを介してクライアント側の再取得を
@@ -138,7 +150,7 @@ function GatedHomeBody({ userId }: { userId: string }) {
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
-      .channel(`home-friendships-gated:${userId}`)
+      .channel(`shell-friendships-gated:${userId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "friendships" },
@@ -158,73 +170,22 @@ function GatedHomeBody({ userId }: { userId: string }) {
   return (
     <>
       <HomeHeader displayName={data.displayName} />
-      <div className="flex flex-1 flex-col md:flex-row">
-        <AddUserPanel
-          initialRequests={data.friendRequests}
-          initialBlockedUsers={data.blockedUsers}
-        />
-        <HomeTabs conversations={data.conversations} loadError={data.loadError} />
-      </div>
+      <ShellRow
+        sidebar={
+          <>
+            <AddUserPanel
+              initialRequests={data.friendRequests}
+              initialBlockedUsers={data.blockedUsers}
+            />
+            <HomeTabs
+              conversations={data.conversations}
+              loadError={data.loadError}
+            />
+          </>
+        }
+      >
+        {children}
+      </ShellRow>
     </>
-  );
-}
-
-export function HomeContent({
-  userId,
-  gated,
-  initialConversations,
-  initialFriendRequests,
-  initialBlockedUsers,
-  initialLoadError,
-}: {
-  userId: string;
-  gated: boolean;
-  initialConversations: ConversationItem[];
-  initialFriendRequests: FriendRequestItem[];
-  initialBlockedUsers: BlockedUserItem[];
-  initialLoadError: boolean;
-}) {
-  const router = useRouter();
-
-  // Phase 10: 非ゲート時のfriendships購読。GatedHomeBody側とは別に用意する
-  // （Reactのフック規約上、下のif (!gated)による早期returnより手前で無条件に
-  // フックを呼ぶ必要があるため）。ゲート時はこのeffect内で早期returnし、
-  // GatedHomeBody自身の購読に委ねる。
-  useEffect(() => {
-    if (gated) return;
-    const supabase = createClient();
-    const channel = supabase
-      .channel(`home-friendships:${userId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "friendships" },
-        () => router.refresh(),
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [gated, userId, router]);
-
-  if (!gated) {
-    return (
-      <>
-        <AddUserPanel
-          initialRequests={initialFriendRequests}
-          initialBlockedUsers={initialBlockedUsers}
-        />
-        <HomeTabs
-          conversations={initialConversations}
-          loadError={initialLoadError}
-        />
-      </>
-    );
-  }
-
-  return (
-    <AuthGate scopeKey="launch" title="起動時の認証">
-      <GatedHomeBody userId={userId} />
-    </AuthGate>
   );
 }

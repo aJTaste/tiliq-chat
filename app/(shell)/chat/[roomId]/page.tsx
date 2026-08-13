@@ -45,14 +45,39 @@ export default async function ChatRoomPage({
     notFound();
   }
 
-  if (myMembership.auth_required) {
+  // Phase 17: 「起動時」ゲート（user_settings.auth_scope_launch）を、このページ自身も
+  // 独立してチェックする。永続サイドバーシェル（app/(shell)/layout.tsx）側のAuthGateは
+  // UI表示（サイドバー）を守るだけで、Next.jsの仕様上「親がchildrenをJSXでどう扱うか」は
+  // children＝このページ自身のサーバー側データ取得までは止めない。そのため、ルーム個別の
+  // 鍵（auth_required）がオフでも起動時ゲートが有効なら、このページを直接URLで開かれた
+  // 場合に相手のプロフィール・メッセージが取得されてしまう抜け道が従来あった。
+  const { data: settings } = await supabase
+    .from("user_settings")
+    .select("auth_scope_launch")
+    .eq("user_id", user.id)
+    .single();
+
+  const launchGateEnabled = settings?.auth_scope_launch ?? false;
+  const needsGate = launchGateEnabled || myMembership.auth_required;
+
+  if (needsGate) {
     // ゲート有効時は相手のプロフィール・メッセージ本体をサーバー側で一切取得しない
     // （RSCペイロードへの解錠前データ混入を避けるため）。解錠後にクライアントから取得する。
+    //
+    // ルーム個別ロックがオンの場合は従来通り room:{roomId} スコープ（起動時ゲートの
+    // 有無に関わらず、常にそのルーム固有の解錠が必要）。ルーム個別ロックがオフで
+    // 起動時ゲートだけが有効な場合は launch スコープを再利用する。シェル側で既に
+    // 解錠済み（sessionStorage["tiliqua-auth-gate:launch"]）のタブでは、この
+    // AuthGateは同じキーを見て即座に解錠済みと判定し再入力を求めない。未解錠の
+    // フレッシュタブから直接URLで来た場合は、シェル側のAuthGateがサイドバーごと
+    // 何も表示しないため、そもそもこのページの出力は画面に現れない。
+    const scopeKey = myMembership.auth_required ? `room:${roomId}` : "launch";
+    const title = myMembership.auth_required
+      ? "このチャットには鍵がかかっています"
+      : "起動時の認証";
+
     return (
-      <AuthGate
-        scopeKey={`room:${roomId}`}
-        title="このチャットには鍵がかかっています"
-      >
+      <AuthGate scopeKey={scopeKey} title={title}>
         <GatedChatRoomLoader
           roomId={roomId}
           currentUserId={user.id}

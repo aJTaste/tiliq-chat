@@ -117,6 +117,7 @@ CLOUDINARY_API_SECRET=
 | 14    | eslint/typescriptメジャー更新の再チェック（結果：継続ブロック）・テキスト送信失敗時の自動リトライ（SRS 3.4） | **完了** |
 | 15    | 地固め総仕上げ：バグ・脆弱性・古い依存の再確認（コード変更なし）＋`docs/srs.md`と実装の乖離解消 | **完了** |
 | 16    | eslint/typescript更新の再チェック（結果：継続ブロック）・実機フィードバックのUIバグ3件修正・起動時ゲート中のヘッダー非表示化（セキュリティ/プライバシー対応）・AuthGate表示位置の調整・グループチャットUI M1設計とナビゲーション刷新構想の整理（実装は保留） | **完了** |
+| 17    | ナビゲーション構造刷新M1（永続サイドバーシェル）：Route Groups + 共有Layoutで`/home`・`/chat/[roomId]`を統合。起動時ゲートの直接URLバイパスも解消 | **完了** |
 
 ## Phase 1 の実装内容・詳細
 
@@ -892,13 +893,85 @@ Phase 12・14時点の調査結果をnpmレジストリ・GitHub issue/PRで再�
 - ナビゲーション構造刷新（永続サイドバーシェル）は構想の記録・feasibility評価のみで、設計・実装は未着手
 - 今回追加で判明した小粒要望群（ホームへ戻るUI、一時チャットの命名・複数保持・チャット画面からの作成、スクロールバー、プロフィール概念、既読機能、タブUI統一方針）はいずれも未対応・Phase未割り当て
 
+## Phase 17 の実装内容・詳細
+
+SRS本文には無い、Phase 16で持ち越された「ナビゲーション構造の刷新（永続サイドバーシェル）」に着手。実装前にNext.js実物ドキュメント（`node_modules/next/dist/docs/`）で技術的な裏取りを行い、Explore→Plan agentでの詳細設計→ユーザー確認（「今回は計画だけで終える」との回答）を経て一旦計画のみで区切った後、ユーザーから改めて実装の指示があったため、同じセッション内でM1（骨組み）まで実装した。
+
+### 技術方針（実物ドキュメントで裏取り済み）
+
+- **Route Groups + 共有Layout**（`app/(shell)/layout.tsx`）を採用。`layout.md`に「Layouts preserve state, remain interactive, and do not rerender」と明記されており、`<Link>`でのクライアント遷移時にレイアウトは再マウントされない（サイドバーの状態が保持される）。Route Group自体はURLに現れないため`/home`・`/chat/[roomId]`というURLは変わらず、`proxy.ts`のmatcher（pathnameベース）にも影響しない
+- **Parallel Routesは不採用**。`authentication.md`に「A layout also does not control whether the rest of the route renders...does not stop them from running or from appearing in the RSC Payload」と明記されており、非表示スロットもサーバー実行されRSCペイロードに含まれてしまう。これは「ロック中は何も取得しない」という既存のAuthGate設計と衝突するため、単純なRoute Groups + 共有Layoutを選んだ
+- 上記と同じ`authentication.md`の記述は、共有layoutで`{children}`を条件分岐で出し分けても子（page）のサーバー側データ取得までは止められないことも意味する。これが後述の「起動時ゲートの直接URLバイパス修正」の設計根拠になっている
+
+### 実装内容
+
+1. **ディレクトリ構造の変更**：`app/home/page.tsx`→`app/(shell)/home/page.tsx`、`app/chat/[roomId]/page.tsx`→`app/(shell)/chat/[roomId]/page.tsx`（`git mv`で移動）。`app/chat/[roomId]/hidden/page.tsx`は`(shell)`に含めず現状の場所のまま（`HiddenMessagesList.tsx`は`/settings`と同じ「自己完結した独立画面」として設計されており、サイドバーと並べる動機がないため。URLも重複しないため技術的な問題もない）
+2. **`app/(shell)/layout.tsx`（新規）**：サイドバー（`AddUserPanel`+`HomeTabs`）のデータ取得責務を旧`app/home/page.tsx`から移設。起動時ゲート有効時は`<AuthGate scopeKey="launch"><GatedShellBody>{children}</GatedShellBody></AuthGate>`、無効時は`HomeHeader`＋`ShellFriendshipsSync`＋`ShellRow`（サイドバー＋`{children}`）を描画する
+3. **`components/shell/`（新規ディレクトリ）**：
+   - `ShellRow.tsx` — サイドバー/メインの`md:`分割。`useSelectedLayoutSegment()`（URL由来でサーバー・クライアント一致、ハイドレーション不一致の心配なし）で`segment === "chat"`かどうかを判定し、モバイル幅ではサイドバーかメインコンテンツのどちらか一方のみをフルスクリーン表示する（従来のページ遷移的な見た目を維持）
+   - `GatedShellBody.tsx` — 旧`components/home/HomeContent.tsx`の`GatedHomeBody`を移設・拡張。`children: ReactNode`を追加で受け取りサイドバーと並べて描画する
+   - `ShellFriendshipsSync.tsx` — 旧`HomeContent.tsx`の非ゲート時friendships購読effectを切り出したもの
+4. **`app/(shell)/home/page.tsx`**：サイドバーの責務が全てlayoutへ移ったため、Supabase呼び出し不要な静的プレースホルダ（「会話を選択してください」）に縮小
+5. **`components/home/HomeContent.tsx`を削除**（ロジックは2.・3.へ移設済み）
+6. **`components/chat/ChatRoom.tsx`**：ルート要素を`h-screen`から`h-full min-h-0 flex-1`に変更（`ShellRow`のメイン枠の子として残り高さいっぱいに広がる形にするため）
+7. **`app/(shell)/chat/[roomId]/template.tsx`（新規）**：後述「roomId切り替え時の強制リマウント」対応
+8. **`app/(shell)/chat/[roomId]/page.tsx`**：起動時ゲートの独立チェックを追加（後述「直接URLバイパスの解消」）
+
+### 設計判断・学び
+
+- **roomId切り替え時の強制リマウントが新たに必要になった。** サイドバーが常時表示になったことで、「チャットA表示中にサイドバーから直接チャットBへ遷移する」という、今までのUIには存在しなかった操作が可能になった。`ChatRoom.tsx`は`useState(initialMessages)`等、初回propsからのみ状態初期化する設計のため、対策が無いとBに切り替えたのにAの内容が残る実害がありうる。より深刻なのは`AuthGate.tsx`：sessionStorage確認が`useEffect(() => {...}, [])`（マウント時1回のみ）のため、`scopeKey`が`room:A`→`room:B`と変わってもコンポーネントが再マウントされない限り再チェックされず、**ロック中のBが、直前に解錠したAの解錠状態のまま見えてしまうセキュリティ上のリスクになりうる**ことが実装前の設計検討で判明した。`template.md`（Next.js実物ドキュメント）に「`layout.js`はルート間で状態を保持するが、`template.js`は動的パラメータが変わるごとに一意なkeyでリマウントされる」と明記されていることを根拠に、`app/(shell)/chat/[roomId]/template.tsx`という空実装のファイルを新設して対処した。この方式なら`AuthGate.tsx`自体は無改修で済む（他2スコープ（起動時・非表示一覧）で使い回している共通コンポーネントに手を入れずに済むため、`key={roomId}`を各呼び出し箇所へ個別に付与する代替案よりもこちらを採用した）
+- **起動時ゲートの直接URLバイパスを解消した。** 従来`/chat/[roomId]`は独自の「起動時」ゲートチェックを一切持っておらず、ルーム個別の`auth_required`がオフの場合、起動時ゲートが有効でも直接URLで素通りできてしまう抜け道があった（`/home`経由の遷移でしか起動時ゲートが効いていなかった）。共有layout側の`AuthGate`はUI表示（サイドバー）を守るだけで子の実行までは止められないため、`app/(shell)/chat/[roomId]/page.tsx`自身にも`user_settings.auth_scope_launch`の独立チェックを追加し、`needsGate = launchGateEnabled || myMembership.auth_required`で合成判定するようにした。ルーム個別ロックがオンなら従来通り`room:{roomId}`スコープ、オフで起動時ゲートだけが有効なら`launch`スコープを再利用する。sessionStorageキーが共有されるため、シェル側で既に解錠済みのタブでは体験上プロンプトが再度出ることはない（二重チェックだが二度手間にはならない）
+- **`/chat/[roomId]/hidden/page.tsx`にも同型の起動時ゲートバイパスが存在するが、今回は対象外とした。** ユーザーが直接指摘したのは`/chat/[roomId]`のみであり、`hidden`側は今回の永続サイドバーシェル化とは独立した問題のため、次回セッションでの対応候補として持ち越す
+- **高さ制約の設計**：シェルのルート（`app/(shell)/layout.tsx`の各分岐の最外周div）を`h-screen overflow-hidden`にし、`overflow-hidden`はそこだけに留めた（`ShellRow`等の中間層は`min-h-0`のみ）。中間層にまで`overflow-hidden`を広げると`ChatRoomOptionsMenu`の`absolute`ドロップダウン等が意図せずクリップされる恐れがあるため
+- **サイドバー内部（`AddUserPanel.tsx`・`HomeTabs.tsx`）の中身は一切変更していない。** 既存の「検索パネル＋タブ一覧」の見た目・挙動をそのまま`ShellRow`の`sidebar`スロットへ移設しただけ。「検索⇄一覧」のトグル切り替えUIや「＋」新規作成メニューといった内部再設計は明示的にスコープ外とし、次回以降のセッションに残した
+- **DBスキーマ・RPC・Server Actionの変更は一切不要だった。** `user_settings.auth_scope_launch`を既存のまま1箇所多く読むだけで済んだ。`app/actions/rooms.ts`の`redirect(\`/chat/${roomId}\`)`もURLが変わらないため無改修で動作する
+
+### 変更・新規ファイル一覧
+
+- 新規：`app/(shell)/layout.tsx`、`app/(shell)/chat/[roomId]/template.tsx`、`components/shell/ShellRow.tsx`、`components/shell/GatedShellBody.tsx`、`components/shell/ShellFriendshipsSync.tsx`
+- 移動：`app/home/page.tsx` → `app/(shell)/home/page.tsx`（大幅縮小）、`app/chat/[roomId]/page.tsx` → `app/(shell)/chat/[roomId]/page.tsx`（起動時ゲート判定を追加）
+- 変更：`components/chat/ChatRoom.tsx`（ルート要素の高さ指定のみ）
+- 削除：`components/home/HomeContent.tsx`
+- 無変更：`components/home/AddUserPanel.tsx`・`HomeTabs.tsx`・`HomeHeader.tsx`、`components/auth/AuthGate.tsx`、`components/chat/GatedChatRoomLoader.tsx`、`proxy.ts`、`app/actions/*`、DBスキーマ
+
+### 検証方法・実施内容
+
+- 各ステップ（骨組み移動→共有layout本実装→ChatRoom調整→起動時ゲート組み込み→直接URLバイパス解消）ごとに`npx tsc --noEmit`・`npx eslint .`・`rm -rf .next && npm run build`を実行し、いずれも段階的にエラー0件・成功を確認した
+- Route Group移動後も`/home`・`/chat/[roomId]`というURLが変わらないこと、ビルド出力のRouteテーブルに現れることをクリーンビルドの出力で確認した
+- Parallel Routes不使用のため、Next.js 16で必須化された`default.js`不足によるビルドエラーは発生しないことを確認済み（実際に発生しなかった）
+
+### 動作確認してほしい項目（実機確認用チェックリスト）
+
+1. デスクトップ幅：`/home`でサイドバー＋「会話を選択してください」のプレースホルダが並んで表示される
+2. デスクトップ幅：サイドバーの会話をクリック→サイドバーが保持されたままメインエリアがチャットに切り替わる、URLが`/chat/[roomId]`になる、ブラウザの戻る/進むが正しく動く
+3. デスクトップ幅：チャットA表示中にサイドバーから直接チャットBへクリック→メッセージ一覧・入力欄・非表示状態がBのものに正しくリセットされる（Aの内容が残っていない）
+4. デスクトップ幅：`/chat/[roomId]`へ直接URLでハードリフレッシュ→サイドバー・チャット両方正しく表示される
+5. モバイル幅：`/home`ではサイドバー（検索＋一覧）のみフルスクリーン表示、プレースホルダは見えない
+6. モバイル幅：会話タップでチャットのみフルスクリーン表示、サイドバーは見えない
+7. **（最重要）** 起動時ゲートON・フレッシュタブ（別ブラウザ/シークレットウィンドウ等）で`/chat/[roomId]`（個別ロック無し）に直接URLアクセス→起動時認証プロンプトが出る（バイパスされないこと）
+8. 起動時ゲートONを`/home`側で解錠後、個別ロック無しのルームへ遷移→再プロンプトなしで即座に到達
+9. 起動時ゲートON＋ルーム個別ロックON→解錠は別々に必要（launch解錠がroomロックを自動解除しないこと）
+10. 3スコープ（起動時／各チャット／非表示一覧）それぞれの既存の解錠・5回失敗ロック・パスワード解除フローに変化がないこと
+11. フレンド申請の送受信・承認・拒否・取り消し・Realtime反映がサイドバー化後も動くこと
+12. チャット画面のRealtimeメッセージ受信・画像送信・ブロック・削除・非表示・オプションメニューのドロップダウンが正しい位置に表示される（クリップされていない）こと
+13. `/settings`・`/chat/[roomId]/hidden`が従来通り単独ページとして開けること
+
+### 未対応・持ち越し事項（Phase 17時点）
+
+- `/chat/[roomId]/hidden/page.tsx`の起動時ゲートバイパスは今回未対応（上記「設計判断・学び」参照）
+- サイドバー幅（`md:w-[32rem]`）は暫定値。実機で見てから調整が必要
+- サイドバー内部UIの再設計（「検索⇄一覧」トグル切り替え、「＋」新規作成メニュー）は引き続きスコープ外
+- グループチャットUI M1の実装は、本シェルの実機確認が済んでから着手する
+- モバイルでチャット画面から一覧に戻るUIが無い問題（Phase 16由来のバックログ）は今回もスコープ外のまま
+- 「＋」新規作成メニュー導入時にはグループ・一時チャット作成UIの置き場所をサイドバー側へ統合する構想が残っている（CLAUDE.md「検討中のアイデア」節3.参照）
+
 ## 検討中のアイデア・未確定のPhase割り当て
 
 以下はPhase 4完了後の会話で出た検討事項で、Phase 5完了時点でも状況は大きく変わっていない。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミングで扱いを決めること。
 
 ### 1. どのPhaseにも未割り当てのSRS要件
 
-- **グループチャットUI（FR-4）：** DB・RLSはグループ対応済みだが、`app/chat/[roomId]/page.tsx`・`get_conversation_list`はいずれも「DM相手1人」前提のまま実装されている。`HomeTabs`にグループタブの見た目だけは用意した（disabled）。**Phase 16でM1（最小スコープ）の詳細設計まで実施済み：** 新規RPC`create_group_room(p_member_ids uuid[], p_name text)`（`rooms.is_group=true`＋`room_members`への複数INSERTをアトミックに行う。作成者以外のメンバー2人以上を要求、ブロック関係のあるユーザーが含まれる場合はエラー）・`get_group_conversation_list()`（ホーム「グループ」タブ用一覧取得。メンバー数・直近メッセージを返す）を追加し、`app/chat/[roomId]/page.tsx`・`components/chat/GatedChatRoomLoader.tsx`（`room.is_group`で分岐）・`components/chat/ChatRoom.tsx`（`otherUser`単数propを`{kind:"dm"|"group",...}`の判別共用体へ変更）・`components/chat/MessageBubble.tsx`（グループの他人のメッセージのみ`senderName`propを表示）・`components/home/HomeTabs.tsx`（グループタブ有効化）・新規`components/home/CreateGroupPanel.tsx`（検索結果の複数選択→作成）を変更/追加する設計。既存のDM専用RPC・RLS・`messages_insert_member_not_blocked`ポリシーは一切変更しない方針。**ただし実装は保留（Phase 16時点）。** 理由は下記「3. ナビゲーション構造の刷新」参照——グループの一覧・作成UIの置き場所がこの決定に直接依存するため、着手順序はナビゲーション刷新の方向性確定が先。なお`messages_insert_member_not_blocked`ポリシーは「room内の他メンバーの誰か1人とでもブロック関係があれば送信不可」という設計のため、グループでは「メンバーの誰か1人をブロックしただけで全体送信が止まる」という、DMでは問題にならなかった過剰に強い挙動になる点も判明している（M1では現状維持、見直すならM4以降）
+- **グループチャットUI（FR-4）：** DB・RLSはグループ対応済みだが、`app/(shell)/chat/[roomId]/page.tsx`・`get_conversation_list`はいずれも「DM相手1人」前提のまま実装されている。`HomeTabs`にグループタブの見た目だけは用意した（disabled）。**Phase 16でM1（最小スコープ）の詳細設計まで実施済み：** 新規RPC`create_group_room(p_member_ids uuid[], p_name text)`（`rooms.is_group=true`＋`room_members`への複数INSERTをアトミックに行う。作成者以外のメンバー2人以上を要求、ブロック関係のあるユーザーが含まれる場合はエラー）・`get_group_conversation_list()`（ホーム「グループ」タブ用一覧取得。メンバー数・直近メッセージを返す）を追加し、`app/(shell)/chat/[roomId]/page.tsx`・`components/chat/GatedChatRoomLoader.tsx`（`room.is_group`で分岐）・`components/chat/ChatRoom.tsx`（`otherUser`単数propを`{kind:"dm"|"group",...}`の判別共用体へ変更）・`components/chat/MessageBubble.tsx`（グループの他人のメッセージのみ`senderName`propを表示）・`components/home/HomeTabs.tsx`（グループタブ有効化）・新規`components/home/CreateGroupPanel.tsx`（検索結果の複数選択→作成）を変更/追加する設計。既存のDM専用RPC・RLS・`messages_insert_member_not_blocked`ポリシーは一切変更しない方針。**Phase 17でナビゲーション刷新M1（永続サイドバーシェル）が実装済みになったため、着手のブロッカーは解消した。** 次に着手する場合は、上記ファイルパスを`app/(shell)/`配下の現在の構成に合わせて読み替えること、`CreateGroupPanel`の置き場所をサイドバー（`ShellRow`の`sidebar`スロット）内に位置づけ直すことを確認してから進める。なお`messages_insert_member_not_blocked`ポリシーは「room内の他メンバーの誰か1人とでもブロック関係があれば送信不可」という設計のため、グループでは「メンバーの誰か1人をブロックしただけで全体送信が止まる」という、DMでは問題にならなかった過剰に強い挙動になる点も判明している（M1では現状維持、見直すならM4以降）
 - **テキスト送信失敗時の自動リトライ（SRS 3.4、最大3回）：** Phase 14で実装済み
 - **真の楽観的更新**（送信直後に仮IDで即座に表示 → サーバー確定後に差し替え）：Phase未割り当てのまま。体感速度に関わるため、Phase 7「低スペック最適化」とまとめるのが良さそうという話が出ている
 
@@ -942,6 +1015,8 @@ Phase 16で、グループチャットUI M1の設置場所をユーザーに確�
 
 **次回セッションでの進め方（案）：** まず本セクションの方向性（案1/案2、実装するかどうか）をユーザーと確定し、Explore/Planエージェントでルートグループ化の詳細設計を行ってから、グループチャットUIのM1着手を再検討する。
 
+**実装状況（Phase 17で更新）：** 上記の方向性確認・実物ドキュメントでの裏取り・詳細設計・実装（M1・骨組み）まで完了した。採用したのは案2寄りの構成（Route Groups + 共有Layout。`<Link>`遷移でレイアウトが再マウントされないことを利用し、URLも`/chat/[roomId]`のまま変わる、案1・案2の両方が同時に満たされる形）。詳細は「Phase 17 の実装内容・詳細」参照。サイドバー内部UI（「検索⇄一覧」トグル、「＋」新規作成メニュー）の再設計は引き続き未着手・スコープ外のまま。実機での最終確認待ち。
+
 ### 4. 実機フィードバックで見つかった追加の要望・小粒課題（Phase 16時点）
 
 Phase 16で、上記3.のヒアリング中に合わせて出てきた小粒な要望・課題。優先度・Phase割り当てはいずれも未確定。
@@ -966,7 +1041,7 @@ Phase 16で、上記3.のヒアリング中に合わせて出てきた小粒な�
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
 
-## ファイル構成（Phase 16時点）
+## ファイル構成（Phase 17時点）
 
 ```
 tiliq-chat/
@@ -983,11 +1058,14 @@ tiliq-chat/
 │   │       └── sign/route.ts    # Cloudinary署名発行（Phase 4）
 │   ├── login/page.tsx           # ログイン画面（Phase 2）
 │   ├── signup/page.tsx          # サインアップ画面（Phase 2）
-│   ├── settings/page.tsx        # 追加認証・通知・DM受信設定画面（Phase 6。Phase 7で通知設定・DM受信設定を統合）
-│   ├── home/page.tsx            # チャット一覧画面（Phase 3。Phase 5でタブ+ユーザー追加パネル、Phase 6で起動時ゲート分岐、Phase 7でStrangerDmToggleを設定画面へ移設、Phase 8で取得エラー伝播、Phase 9でFR-15レスポンシブレイアウトの外枠を追加、Phase 16でゲート有効時はヘッダー（ユーザー名等）を一切描画・取得しないよう変更）
-│   ├── chat/[roomId]/
-│   │   ├── page.tsx             # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得を追加）
-│   │   └── hidden/page.tsx      # 非表示メッセージ一覧（Phase 6・新規）
+│   ├── settings/page.tsx        # 追加認証・通知・DM受信設定画面（Phase 6。Phase 7で通知設定・DM受信設定を統合。永続サイドバーシェルには含まれない独立ページ）
+│   ├── (shell)/                 # 永続サイドバーシェル（Phase 17・新規Route Group。URLには現れない）
+│   │   ├── layout.tsx           # サイドバー（AddUserPanel+HomeTabs）のデータ取得・起動時ゲート判定。`/home`・`/chat/[roomId]`間のクライアント遷移で再マウントされない
+│   │   ├── home/page.tsx        # チャット未選択時のメインエリアのプレースホルダ（Phase 3〜16の実装はlayout.tsx/components/shell/へ移設済み。旧app/home/page.tsxから移動）
+│   │   └── chat/[roomId]/
+│   │       ├── page.tsx         # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得、Phase 17で起動時ゲートの独立チェックを追加＝直接URLバイパスの解消。旧app/chat/[roomId]/page.tsxから移動）
+│   │       └── template.tsx     # roomId切り替え時の強制リマウント用（Phase 17・新規）
+│   ├── chat/[roomId]/hidden/page.tsx  # 非表示メッセージ一覧（Phase 6・新規。永続サイドバーシェルには含めない独立ページのまま）
 │   └── actions/
 │       ├── auth.ts              # signup/login/logout Server Actions（Phase 2）
 │       ├── auth-secret.ts       # 追加認証（PIN/キー）設定・検証系 Server Actions（Phase 6・新規）
@@ -1011,7 +1089,7 @@ tiliq-chat/
 ├── components/
 │   ├── TiliquaMark.tsx          # ブランドロゴ
 │   ├── auth/
-│   │   └── AuthGate.tsx         # 追加認証の共通ゲート（Phase 6・新規。Phase 8でtry/catch化、Phase 16でPC幅のレイアウト崩れ修正・表示位置を数学的中央よりやや上寄りに調整）
+│   │   └── AuthGate.tsx         # 追加認証の共通ゲート（Phase 6・新規。Phase 8でtry/catch化、Phase 16でPC幅のレイアウト崩れ修正・表示位置を数学的中央よりやや上寄りに調整。Phase 17でroomId切り替え時の再マウントをtemplate.tsx側で担保する設計に伴い無改修のまま活用）
 │   ├── settings/
 │   │   ├── AuthSettingsForm.tsx        # PIN/キー設定・スコープトグルフォーム（Phase 6・新規。Phase 8でtry/catch化・PIN入力属性追加）
 │   │   └── NotificationSettingsForm.tsx # 通知設定・DM受信設定フォーム（Phase 7・新規。Phase 8でtry/catch化・エラー表示追加）
@@ -1019,17 +1097,20 @@ tiliq-chat/
 │   │   ├── ServiceWorkerRegistrar.tsx  # Service Worker登録（何も描画しない）
 │   │   ├── OfflineBanner.tsx           # SRS 3.4オフラインバナー
 │   │   └── InstallPrompt.tsx           # PWAインストール導線（beforeinstallprompt+iOSフォールバック）
+│   ├── shell/                   # Phase 17・新規ディレクトリ（永続サイドバーシェル本体）
+│   │   ├── ShellRow.tsx         # サイドバー/メインのmd:分割。useSelectedLayoutSegmentでモバイル幅の表示切替を判定
+│   │   ├── GatedShellBody.tsx   # 起動時ゲート有効時のクライアント側取得＋描画（旧components/home/HomeContent.tsxのGatedHomeBodyを移設・拡張。childrenも受け取る）
+│   │   └── ShellFriendshipsSync.tsx  # 非ゲート時のfriendships Realtime購読（旧HomeContent.tsxの該当effectを移設）
 │   ├── chat/
-│   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6。Phase 8でtry/catch化・空状態・日付区切り等のUX修正、Phase 14でテキスト送信の自動リトライ（SRS 3.4）を追加）
+│   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6。Phase 8でtry/catch化・空状態・日付区切り等のUX修正、Phase 14でテキスト送信の自動リトライ（SRS 3.4）、Phase 17でルート要素をh-screenからh-full flex-1へ変更）
 │   │   ├── MessageBubble.tsx        # メッセージ表示・長押し/右クリックメニュー（Phase 3/4/6。Phase 8で画像alt修正、Phase 9でキーボード操作対応を追加）
 │   │   ├── ChatRoomOptionsMenu.tsx  # チャットオプションメニュー（Phase 6・新規。Phase 8でtry/catch化・確認ダイアログ追加）
 │   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規。Phase 8でメッセージ取得エラー処理を追加）
 │   │   └── HiddenMessagesList.tsx   # 非表示メッセージ一覧本体（Phase 6・新規。Phase 8でtry/catch化・画像alt修正）
 │   └── home/                    # Phase 5・新規ディレクトリ
-│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ・一時チャットバッジ（Phase 5/6。Phase 8でフレンド解除ボタン・取得エラー表示、Phase 9でFR-14検索フィルタ・レスポンシブレイアウト対応を追加）
-│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック・一時チャット期限選択（Phase 5/6。Phase 8でtry/catch化・ESLintエラー解消・検索0件表示、Phase 9でFR-15レスポンシブ配置（PCサイドバー/スマホボトムバー）、Phase 13でPC常時展開、Phase 16で検索結果のレイアウト崩れ・申請中メッセージボタン消失を修正）
-│       ├── HomeHeader.tsx       # ホーム画面ヘッダー（ロゴ・ユーザー名・設定/ログアウト導線）（Phase 16・新規。app/home/page.tsxから切り出し、ゲート有効時はAuthGate解錠後にのみ描画される）
-│       └── HomeContent.tsx      # 起動時ゲート有効時のクライアント側取得（Phase 6・新規。Phase 8で取得エラー処理、Phase 10でfriendshipsのRealtime購読を追加、Phase 16でHomeHeaderの解錠後描画・プロフィール表示名のクライアント側取得を追加）
+│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ・一時チャットバッジ（Phase 5/6。Phase 8でフレンド解除ボタン・取得エラー表示、Phase 9でFR-14検索フィルタ・レスポンシブレイアウト対応を追加。中身はPhase 17でも無変更のままシェルのsidebarスロットへ移設）
+│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック・一時チャット期限選択（Phase 5/6。Phase 8でtry/catch化・ESLintエラー解消・検索0件表示、Phase 9でFR-15レスポンシブ配置（PCサイドバー/スマホボトムバー）、Phase 13でPC常時展開、Phase 16で検索結果のレイアウト崩れ・申請中メッセージボタン消失を修正。中身はPhase 17でも無変更）
+│       └── HomeHeader.tsx       # ホーム画面ヘッダー（ロゴ・ユーザー名・設定/ログアウト導線）（Phase 16・新規。Phase 17でapp/(shell)/layout.tsx・components/shell/GatedShellBody.tsxから呼ばれる形に変更）
 ├── types/
 │   └── supabase.ts              # Supabase生成型定義（Phase 3で導入、Phase 5/6で再生成）
 ├── public/
@@ -1039,23 +1120,25 @@ tiliq-chat/
 ├── docs/
 │   ├── srs.md                   # 要件定義（正。Phase 8でlock_type/lock_secret・auth_requiredの記載を実態に合わせて更新。Phase 15で検索タブ・FR-4/FR-14・エラー形式・3.9テスト要件・Future Extensionsの計5箇所を実態に整合）
 │   └── schema.sql               # DBスキーマ参照用ファイル（Phase 6のRPC・列、Phase 8のanon revokeを追記）
-├── proxy.ts                     # ルート保護・セッションリフレッシュ（Phase 2。Phase 7でmatcherにsw.js除外を追加）
+├── proxy.ts                     # ルート保護・セッションリフレッシュ（Phase 2。Phase 7でmatcherにsw.js除外を追加。Route Group導入後もpathnameベースのmatcherは無変更で機能）
 ├── next.config.ts               # 画像remotePatterns（Phase 4）+ sw.js用headers（Phase 7）
 ├── .env.example                 # Phase 8で未使用のNEXT_PUBLIC_APP_URLを削除
 └── CLAUDE.md（このファイル）
 ```
 
-（`components/chat/NewDmForm.tsx`はPhase 5で`AddUserPanel`に統合されたため削除済み。`components/home/StrangerDmToggle.tsx`はPhase 7で`NotificationSettingsForm`に統合されたため削除済み。`app/actions/rooms.ts`の`startDirectMessage`関数はPhase 8でデッドコードとして削除済み）
+（`components/chat/NewDmForm.tsx`はPhase 5で`AddUserPanel`に統合されたため削除済み。`components/home/StrangerDmToggle.tsx`はPhase 7で`NotificationSettingsForm`に統合されたため削除済み。`app/actions/rooms.ts`の`startDirectMessage`関数はPhase 8でデッドコードとして削除済み。`components/home/HomeContent.tsx`はPhase 17で`components/shell/`へ移設・分割されたため削除済み）
 
-## 次にやること（Phase 17・未確定）
+## 次にやること（Phase 18・未確定）
 
-**Phase 15をもって、現行スコープでの「一旦完成・既知の問題なし」という区切りに到達した。** バグ0件・脆弱性0件・TODO0件・`docs/srs.md`と実装の乖離解消済み（自動テスト未導入は意図的な運用判断として明記済み）。ここから先は新機能・仕様変更のラウンドとして扱う（ユーザー自身の言葉：「とりあえず完成、一旦問題はない、という状態に持っていって、そこから今後、新機能や仕様変更等の作業をする」）。Phase 16では実機フィードバックで見つかった具体的UIバグ3件を修正し、その過程でユーザーから新たにナビゲーション構造刷新の構想・複数の小粒要望が寄せられたため、グループチャットUIの実装着手より先にこれらの方向性を固める必要が生じた。
+**Phase 15をもって、現行スコープでの「一旦完成・既知の問題なし」という区切りに到達した。** ここから先は新機能・仕様変更のラウンドとして扱う（ユーザー自身の言葉：「とりあえず完成、一旦問題はない、という状態に持っていって、そこから今後、新機能や仕様変更等の作業をする」）。Phase 16でUIバグ3件を修正しつつナビゲーション構造刷新の構想が寄せられ、Phase 17でその構想をNext.js実物ドキュメントで裏取りしたうえでM1（永続サイドバーシェルの骨組み）まで実装した。**これによりグループチャットUIの実装着手を妨げていたブロッカーは解消した。**
 
-以下は次ラウンドの候補（優先度未確定）。ユーザーから「許可不要で計画→実装を繰り返してよい、コミットも自由に行ってよい」との承認済み（2026-08-12）のため、次回セッションでは基本的にこのリストから妥当なものを選んで自律的に進めてよい。ただし候補2（ナビゲーション構造刷新）は方向性そのものがユーザー確認事項のため、着手前に必ず相談すること：
+以下は次ラウンドの候補（優先度未確定）。ユーザーから「許可不要で計画→実装を繰り返してよい、コミットも自由に行ってよい」との承認済み（2026-08-12）のため、次回セッションでは基本的にこのリストから妥当なものを選んで自律的に進めてよい：
 
-1. **ナビゲーション構造の刷新（永続サイドバーシェル）の方向性決定・設計：** 「検討中のアイデア・未確定のPhase割り当て」節3.参照。ホーム/チャット画面を共有レイアウト（ルートグループ）でまとめ、サイドバーを両画面で保持する構想。**グループチャットUIの一覧・作成UIの置き場所に直結するため、これが決まらないとグループチャットUI M1（下記2.）の実装に着手できない。** 着手する場合、まず案1（メインコンテンツ切り替え）・案2（`/chat`遷移＋サイドバー保持）のどちらにするか、実装するかどうか自体をユーザーに確認してから、Explore/Planエージェントで詳細設計を行うこと
-2. **グループチャットUI（FR-4）M1の実装：** 「検討中のアイデア」節1.にPhase 16で完了した詳細設計（新規RPC`create_group_room`/`get_group_conversation_list`、変更ファイル一覧）を記録済み。**着手は上記1.の方向性が決まってから。** 実装自体は他の候補より規模が大きく複数セッションに渡る見込みのため、着手する場合はまずスコープを1セッション分に区切ってから進めること
-3. **実機フィードバックで見つかった小粒課題群：** 「検討中のアイデア」節4.参照（ホームへ戻るUI、一時チャットの命名・複数保持・チャット画面からの作成、スクロールバー、プロフィール概念、既読機能、タブUI統一方針）。優先度未確定のため、着手する場合はユーザーと相談のうえ妥当なものから選ぶ
-4. **`eslint`（9→10）・`typescript`（6.0→7系）のメジャー更新の再挑戦：** Phase 16時点でも依然ブロック中（詳細は「Phase 16 の実装内容・詳細」参照）。ただしeslint側は`eslint-plugin-react`の対応PR #4022がマージ待ち段階まで進展済み。着手前に必ず`npm view eslint-plugin-react@latest version`・`npm view typescript-eslint peerDependencies`で状況を再確認し、実際に`npx eslint .`まで動かして検証してから確定すること
-5. **デプロイ（将来・ユーザー指示待ち）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。**ユーザーより明示的な指示済み（2026-08-12）：「デプロイは、私が指示しない限り行いません。数カ月後になると思います。」** 他の未実装機能が出揃った・地固めが済んだといった状況証拠だけでは着手判断とせず、自律的な計画→実装→コミットの承認範囲にもデプロイは含まれない。ユーザーから明示的な着手指示があるまでは、バックログに置いておくのみに留める
-6. **自動テスト基盤の導入：** Phase 15でユーザーに確認し、現時点では見送り・従来通りの手動QA運用継続で確定済み（`docs/srs.md` 3.9節にも運用実態を明記済み）。**この決定は蒸し返す必要はない。** グループチャットUI等の大規模な新機能実装に着手し、既存機能への影響範囲が広がるタイミングになって初めて、改めて要否を検討する候補として記録するに留める
+1. **ナビゲーション構造刷新M1（Phase 17実装分）の実機確認：** 「Phase 17 の実装内容・詳細」の動作確認チェックリスト参照。特に起動時ゲートの直接URLバイパスが実際に塞がれていることの確認が最重要。実機確認が済むまでは、下記2.（グループチャットUI）の着手前に一度立ち止まって確認することを推奨する
+2. **グループチャットUI（FR-4）M1の実装：** 「検討中のアイデア」節1.にPhase 16で完了した詳細設計を記録済み（Phase 17でのファイルパス変更を反映済み）。実装自体は他の候補より規模が大きく複数セッションに渡る見込みのため、着手する場合はまずスコープを1セッション分に区切ってから進めること。`CreateGroupPanel`（新規想定）の置き場所は`ShellRow`の`sidebar`スロット内に位置づける
+3. **サイドバー内部UIの再設計：** 「検討中のアイデア」節3.参照。「検索⇄一覧」のトグル切り替えUI、「＋」新規作成メニュー（グループ・一時チャット作成をここに統合する構想）。Phase 17では骨組みのみで、既存`AddUserPanel.tsx`/`HomeTabs.tsx`の中身は意図的に変更していない
+4. **実機フィードバックで見つかった小粒課題群：** 「検討中のアイデア」節4.参照（ホームへ戻るUI、一時チャットの命名・複数保持・チャット画面からの作成、スクロールバー、プロフィール概念、既読機能、タブUI統一方針）。優先度未確定のため、着手する場合はユーザーと相談のうえ妥当なものから選ぶ
+5. **`/chat/[roomId]/hidden/page.tsx`の起動時ゲートバイパス修正：** Phase 17で`/chat/[roomId]`側は対応済みだが、`hidden`側は同型の穴が残っている（「Phase 17 の実装内容・詳細」の持ち越し事項参照）
+6. **`eslint`（9→10）・`typescript`（6.0→7系）のメジャー更新の再挑戦：** Phase 16時点でも依然ブロック中（詳細は「Phase 16 の実装内容・詳細」参照）。ただしeslint側は`eslint-plugin-react`の対応PR #4022がマージ待ち段階まで進展済み。着手前に必ず`npm view eslint-plugin-react@latest version`・`npm view typescript-eslint peerDependencies`で状況を再確認し、実際に`npx eslint .`まで動かして検証してから確定すること
+7. **デプロイ（将来・ユーザー指示待ち）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。**ユーザーより明示的な指示済み（2026-08-12）：「デプロイは、私が指示しない限り行いません。数カ月後になると思います。」** 他の未実装機能が出揃った・地固めが済んだといった状況証拠だけでは着手判断とせず、自律的な計画→実装→コミットの承認範囲にもデプロイは含まれない。ユーザーから明示的な着手指示があるまでは、バックログに置いておくのみに留める
+8. **自動テスト基盤の導入：** Phase 15でユーザーに確認し、現時点では見送り・従来通りの手動QA運用継続で確定済み（`docs/srs.md` 3.9節にも運用実態を明記済み）。**この決定は蒸し返す必要はない。** グループチャットUI等の大規模な新機能実装に着手し、既存機能への影響範囲が広がるタイミングになって初めて、改めて要否を検討する候補として記録するに留める

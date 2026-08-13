@@ -510,7 +510,7 @@ export function ChatRoom({
     (inputValue.trim().length > 0 || selectedFile !== null);
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="flex h-full min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-3 border-b border-band/60 px-4 py-3">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
           {otherUser.displayName.slice(0, 1)}
