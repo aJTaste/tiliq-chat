@@ -1092,6 +1092,33 @@ M1のスコープ：グループ作成（検索から複数選択）・グルー
 - サイドバー内部UI再設計（「検索⇄一覧」トグル、「＋」新規作成メニューへのグループ・一時チャット作成統合）は引き続き別のバックログ項目のまま。今回`CreateGroupPanel`はHomeTabsの「グループ」タブ内に暫定配置した
 - グループの最大人数（合計50人）はエンジニアリング判断による暫定値。UI上に上限の明示は無い（送信時にサーバーエラーとして拒否されるのみ）
 
+## Phase 20 の実装内容・詳細
+
+CLAUDE.md「次にやること（Phase 19・未確定）」候補7（eslint 9→10・typescript 6.0→7系メジャー更新の再チェック）を実施。あわせてPhase 15スタイルの軽い技術的負債確認（TODO/FIXMEコメント・ビルドエラー抑制設定・`.env.example`の整合性）も行った。**調査の結果コード変更が必要な項目は一切無く、本Phaseはこの記録のみで完結する。**
+
+### eslint（9→10）・typescript（6.0→7系）：状況変化なし、継続ブロック（2026-08-13時点）
+
+- `typescript-eslint`（現行8.65.0）の`peerDependencies.typescript`は依然`>=4.8.4 <6.1.0`のまま。前提となる**TypeScript 7.1自体も未リリース**（`npm view typescript dist-tags`：`latest: 7.0.2`、`next: 7.1.0-dev.20260813.1`のdevビルドのみ）
+- `eslint-plugin-react`は依然7.37.5のまま、`peerDependencies.eslint`は`^9.7`まで（`eslint-config-next@16.3.0`が同梱するバージョンも変わらず）
+- Phase 16で言及したESLint 10対応PR（[jsx-eslint/eslint-plugin-react#4022](https://github.com/jsx-eslint/eslint-plugin-react/pull/4022)）の状況をWeb検索で確認：**依然オープンのまま。** レビュアー承認済み・独立検証（ESLint 9.39.4と10.8.1で1,229件の指摘が一致）も完了しているが、メンテナ（ljharb）の最終アクション待ちの状態がPhase 16時点から変わっていない
+- `npm audit`：脆弱性0件
+- `npm outdated`：`@types/node`（22.20.1→26.2.0）・`eslint`（9.39.5→10.8.1）・`typescript`（6.0.3→7.0.2）の3件のみ。`@types/node`はNode.jsランタイムのターゲットとは無関係な最新配布のため意図的に追従しない（Phase 11の判断を継続）
+
+### 技術的負債の簡易確認：問題なし
+
+- `app/`/`components`/`lib`配下にTODO/FIXME/XXX/HACKコメント：0件
+- `next.config.ts`にビルドエラー抑制設定（`eslint.ignoreDuringBuilds`・`typescript.ignoreBuildErrors`）：無し
+- `.env.example`：CLAUDE.md記載の環境変数一覧と一致
+
+### 検証方法・実施内容
+
+- コード変更が無いため`npx tsc --noEmit`・`npx eslint .`・クリーンビルドは今回実施していない（無風のため）
+- `npm view`・`npm outdated`・`npm audit`・grepによる調査のみ
+
+### 未対応・持ち越し事項（Phase 20時点）
+
+- eslint（9→10）・typescript（6.0→7系）は引き続きブロック中。**次回監視ポイント：** `eslint-plugin-react`の新バージョン公開有無（PR #4022マージ後を想定）、TypeScript 7.1の正式リリース＋`typescript-eslint`の対応リリース
+
 ## 検討中のアイデア・未確定のPhase割り当て
 
 以下はPhase 4完了後の会話で出た検討事項で、Phase 5完了時点でも状況は大きく変わっていない。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミングで扱いを決めること。
@@ -1278,7 +1305,7 @@ tiliq-chat/
 4. **サイドバー内部UIの再設計：** 「検討中のアイデア」節3.参照。「検索⇄一覧」のトグル切り替えUI、「＋」新規作成メニュー（グループ・一時チャット作成をここに統合する構想）。Phase 17では骨組みのみで、既存`AddUserPanel.tsx`/`HomeTabs.tsx`の中身は意図的に変更していない。Phase 19の`CreateGroupPanel`は暫定的に`HomeTabs.tsx`のグループタブ内に配置しており、本格的なサイドバー再設計時には置き場所を再検討する余地がある
 5. **実機フィードバックで見つかった小粒課題群：** 「検討中のアイデア」節4.参照（ホームへ戻るUI、一時チャットの命名・複数保持・チャット画面からの作成、スクロールバー、プロフィール概念、既読機能、タブUI統一方針）。優先度未確定のため、着手する場合はユーザーと相談のうえ妥当なものから選ぶ
 6. ~~`/chat/[roomId]/hidden/page.tsx`の起動時ゲートバイパス修正~~ → **Phase 18で対応済み（2026-08-13）。** 詳細は「Phase 18 の実装内容・詳細」内の該当節を参照。実機確認は次回ユーザー確認待ち
-7. **`eslint`（9→10）・`typescript`（6.0→7系）のメジャー更新の再挑戦：** Phase 16時点でも依然ブロック中（詳細は「Phase 16 の実装内容・詳細」参照）。ただしeslint側は`eslint-plugin-react`の対応PR #4022がマージ待ち段階まで進展済み。着手前に必ず`npm view eslint-plugin-react@latest version`・`npm view typescript-eslint peerDependencies`で状況を再確認し、実際に`npx eslint .`まで動かして検証してから確定すること
+7. ~~`eslint`（9→10）・`typescript`（6.0→7系）のメジャー更新の再挑戦~~ → **Phase 20で再チェック済み（2026-08-13）。継続ブロック、状況変化なし。** `eslint-plugin-react`のPR #4022は依然オープン（メンテナ最終アクション待ち）、TypeScript 7.1も未リリース。次回はPR #4022のマージ有無・TypeScript 7.1リリースから確認するとよい（詳細は「Phase 20 の実装内容・詳細」参照）
 8. **グループチャットUI M2以降：** メンバー追加・削除・退出・オーナー譲渡等の管理UI、`messages_insert_member_not_blocked`の過剰に強いブロック挙動の見直し（Phase 19「未対応・持ち越し事項」参照）
 9. **デプロイ（将来・ユーザー指示待ち）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。**ユーザーより明示的な指示済み（2026-08-12）：「デプロイは、私が指示しない限り行いません。数カ月後になると思います。」** 他の未実装機能が出揃った・地固めが済んだといった状況証拠だけでは着手判断とせず、自律的な計画→実装→コミットの承認範囲にもデプロイは含まれない。ユーザーから明示的な着手指示があるまでは、バックログに置いておくのみに留める
 10. **自動テスト基盤の導入：** Phase 15でユーザーに確認し、現時点では見送り・従来通りの手動QA運用継続で確定済み（`docs/srs.md` 3.9節にも運用実態を明記済み）。**この決定は蒸し返す必要はない。** グループチャットUI M1が実装され既存機能への影響範囲が実際に広がったため、次回セッションで改めて要否を検討する候補として繰り上げてもよい
