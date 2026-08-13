@@ -1006,6 +1006,23 @@ CLAUDE.md「次にやること（Phase 18・未確定）」候補2、チャッ�
 - 上記「設計判断・学び」で検討した、Stage 2/4の境界をさらに動かす追加最適化は見送り済み（これ以上の並列化は費用対効果が薄いと判断）
 - 「検討中のアイデア」節5.で挙がっていたSuspenseによるヘッダー/入力欄の据え置き案（メッセージ一覧だけ遅延ストリーミング）は今回のスコープ外のまま。`template.tsx`の強制リマウント設計との整合性検討が必要（同節参照）
 
+### `/chat/[roomId]/hidden/page.tsx`の起動時ゲートバイパス修正（同セッション内で追加対応）
+
+CLAUDE.md「次にやること（Phase 18・未確定）」候補6。Phase 17で`app/(shell)/chat/[roomId]/page.tsx`に対して行った修正（起動時ゲートの独立チェック追加）と同型の問題が`app/chat/[roomId]/hidden/page.tsx`にも残っていたため対応。
+
+**問題：** `hidden/page.tsx`は永続サイドバーシェル（`app/(shell)/layout.tsx`）のRoute Group外にある独立ページのため、シェル側の起動時ゲート（`AuthGate` scopeKey="launch"）による保護を一切受けない。従来は`user_settings.auth_scope_hidden_list`（このページ専用のスコープ）のみでゲート要否を判定していたため、起動時ゲートが有効でも`auth_scope_hidden_list`がオフなら、このページを直接URLで開けば非表示メッセージ一覧が素通りできる抜け道があった。
+
+**対応：** `settings`クエリに`auth_scope_launch`も追加し、`needsGate = hiddenListGateEnabled || launchGateEnabled`で合成判定するよう変更（`app/(shell)/chat/[roomId]/page.tsx`のroom個別ロック×起動時ゲートの合成判定と同じ考え方）。`hidden-list`専用ゲートが有効なら従来通りそちらのscopeKeyを優先し、専用ゲートがオフで起動時ゲートだけが有効な場合は`launch`スコープを再利用する（シェル側で既に解錠済みのタブでは再入力不要）。あわせて`membership`・`settings`の2クエリを`Promise.all`で並列化した（Phase 18本編と同じ観点のついで対応）。
+
+`AuthGate.tsx`を確認し、`unlocked`がtrueになるまで`children`自体をマウントしない設計（`if (unlocked) return <>{children}</>`、それ以外はロック画面を返す）であることを確認済み。`body`（`HiddenMessagesList`）に渡すpropsは`roomId`/`currentUserId`のみで実際のメッセージ内容を含まないため、`ChatRoom`のケースとは異なりRSCペイロードへの解錠前データ混入リスクはそもそも無い（純粋に「解錠前は一覧コンポーネント自体をマウントしない」という表示制御の話）。
+
+### 検証方法・実施内容（この追加対応分）
+
+- `npx tsc --noEmit`（エラー0件）
+- `npx eslint .`（エラー0件）
+- `rm -rf .next && npm run build`（クリーンビルド成功）
+- 実機確認（起動時ゲートON・`auth_scope_hidden_list`OFFの状態で`/chat/[roomId]/hidden`に直接URLアクセスし、認証プロンプトが出ることの確認）はユーザー待ち
+
 ## 検討中のアイデア・未確定のPhase割り当て
 
 以下はPhase 4完了後の会話で出た検討事項で、Phase 5完了時点でも状況は大きく変わっていない。SRS本文にはまだ反映していない、あるいはどのPhaseにも割り当てが確定していないものなので、次にPhase構成を見直すタイミングで扱いを決めること。
@@ -1116,7 +1133,7 @@ tiliq-chat/
 │   │   └── chat/[roomId]/
 │   │       ├── page.tsx         # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得、Phase 17で起動時ゲートの独立チェックを追加＝直接URLバイパスの解消、Phase 18でDB問い合わせをPromise.allで並列化（4段階に圧縮）。旧app/chat/[roomId]/page.tsxから移動）
 │   │       └── template.tsx     # roomId切り替え時の強制リマウント用（Phase 17・新規）
-│   ├── chat/[roomId]/hidden/page.tsx  # 非表示メッセージ一覧（Phase 6・新規。永続サイドバーシェルには含めない独立ページのまま）
+│   ├── chat/[roomId]/hidden/page.tsx  # 非表示メッセージ一覧（Phase 6・新規。永続サイドバーシェルには含めない独立ページのまま。Phase 18で起動時ゲートの独立チェックを追加＝直接URLバイパスの解消、DB問い合わせをPromise.allで並列化）
 │   └── actions/
 │       ├── auth.ts              # signup/login/logout Server Actions（Phase 2）
 │       ├── auth-secret.ts       # 追加認証（PIN/キー）設定・検証系 Server Actions（Phase 6・新規）
@@ -1190,7 +1207,7 @@ tiliq-chat/
 3. **グループチャットUI（FR-4）M1の実装：** 「検討中のアイデア」節1.にPhase 16で完了した詳細設計を記録済み（Phase 17でのファイルパス変更を反映済み）。実装自体は他の候補より規模が大きく複数セッションに渡る見込みのため、着手する場合はまずスコープを1セッション分に区切ってから進めること。`CreateGroupPanel`（新規想定）の置き場所は`ShellRow`の`sidebar`スロット内に位置づける
 4. **サイドバー内部UIの再設計：** 「検討中のアイデア」節3.参照。「検索⇄一覧」のトグル切り替えUI、「＋」新規作成メニュー（グループ・一時チャット作成をここに統合する構想）。Phase 17では骨組みのみで、既存`AddUserPanel.tsx`/`HomeTabs.tsx`の中身は意図的に変更していない
 5. **実機フィードバックで見つかった小粒課題群：** 「検討中のアイデア」節4.参照（ホームへ戻るUI、一時チャットの命名・複数保持・チャット画面からの作成、スクロールバー、プロフィール概念、既読機能、タブUI統一方針）。優先度未確定のため、着手する場合はユーザーと相談のうえ妥当なものから選ぶ
-6. **`/chat/[roomId]/hidden/page.tsx`の起動時ゲートバイパス修正：** Phase 17で`/chat/[roomId]`側は対応済みだが、`hidden`側は同型の穴が残っている（「Phase 17 の実装内容・詳細」の持ち越し事項参照）
+6. ~~`/chat/[roomId]/hidden/page.tsx`の起動時ゲートバイパス修正~~ → **Phase 18で対応済み（2026-08-13）。** 詳細は「Phase 18 の実装内容・詳細」内の該当節を参照。実機確認は次回ユーザー確認待ち
 7. **`eslint`（9→10）・`typescript`（6.0→7系）のメジャー更新の再挑戦：** Phase 16時点でも依然ブロック中（詳細は「Phase 16 の実装内容・詳細」参照）。ただしeslint側は`eslint-plugin-react`の対応PR #4022がマージ待ち段階まで進展済み。着手前に必ず`npm view eslint-plugin-react@latest version`・`npm view typescript-eslint peerDependencies`で状況を再確認し、実際に`npx eslint .`まで動かして検証してから確定すること
 8. **デプロイ（将来・ユーザー指示待ち）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。**ユーザーより明示的な指示済み（2026-08-12）：「デプロイは、私が指示しない限り行いません。数カ月後になると思います。」** 他の未実装機能が出揃った・地固めが済んだといった状況証拠だけでは着手判断とせず、自律的な計画→実装→コミットの承認範囲にもデプロイは含まれない。ユーザーから明示的な着手指示があるまでは、バックログに置いておくのみに留める
 9. **自動テスト基盤の導入：** Phase 15でユーザーに確認し、現時点では見送り・従来通りの手動QA運用継続で確定済み（`docs/srs.md` 3.9節にも運用実態を明記済み）。**この決定は蒸し返す必要はない。** グループチャットUI等の大規模な新機能実装に着手し、既存機能への影響範囲が広がるタイミングになって初めて、改めて要否を検討する候補として記録するに留める
