@@ -101,9 +101,11 @@ export default async function ChatRoomPage({
   // Phase 19: グループチャットUI M1。DM（相手1人）とグループ（複数人）で
   // 「相手」の取得方法が根本的に異なるため、ここで完全に分岐する。
   if (room.is_group) {
+    // Phase 21: グループメンバー管理M2のためroleも取得し、自分を除外せず
+    // members配列に含める（メンバー管理パネルで「自分がオーナーか」を判定するため）。
     const { data: memberRows } = await supabase
       .from("room_members")
-      .select("user_id")
+      .select("user_id, role")
       .eq("room_id", roomId);
 
     if (!memberRows) {
@@ -111,6 +113,7 @@ export default async function ChatRoomPage({
     }
 
     const allMemberIds = memberRows.map((row) => row.user_id);
+    const roleById = new Map(memberRows.map((row) => [row.user_id, row.role]));
 
     // room_members.user_idはauth.users(id)を参照しprofiles(id)への直接FKが無いため、
     // PostgRESTのネスト埋め込みは使えず2段階のクエリになる（既存のDM側otherMember→
@@ -120,9 +123,13 @@ export default async function ChatRoomPage({
       .select("id, display_name")
       .in("id", allMemberIds);
 
-    const members = (memberProfiles ?? [])
-      .filter((p) => p.id !== user.id)
-      .map((p) => ({ id: p.id, displayName: p.display_name }));
+    const members = (memberProfiles ?? []).map((p) => ({
+      id: p.id,
+      displayName: p.display_name,
+      role: (roleById.get(p.id) === "owner" ? "owner" : "member") as
+        | "owner"
+        | "member",
+    }));
 
     // blocksクエリは省略（グループには1対1のブロックUIが無いM1スコープの制約。
     // 既存のmessages_insert_member_not_blocked RLSは引き続き送信時に効く）。
@@ -157,7 +164,6 @@ export default async function ChatRoomPage({
         peer={{
           kind: "group",
           roomName: room.name,
-          memberCount: allMemberIds.length,
           members,
         }}
         initialMessages={initialMessages}

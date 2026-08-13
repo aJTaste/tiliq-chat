@@ -321,6 +321,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      add_group_members: {
+        Args: { p_member_ids: string[]; p_room_id: string }
+        Returns: undefined
+      }
       block_user: { Args: { p_target_id: string }; Returns: undefined }
       cancel_friend_request: {
         Args: { p_friendship_id: string }

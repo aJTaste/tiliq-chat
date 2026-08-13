@@ -41,6 +41,29 @@ function mapGroupError(message: string): string {
   return "グループの作成に失敗しました。時間をおいて再度お試しください。";
 }
 
+// Phase 21: グループチャットメンバー管理M2。add_group_members RPCのエラーメッセージを
+// 日本語化する。mapGroupErrorを使い回さず独立させた理由：mapGroupErrorの「ブロック」
+// 「汎用フォールバック」文言は「作成できません」というcreateGroupRoom専用の言い回しに
+// なっており、メンバー追加の文脈で使うと不自然になるため。
+function mapAddMembersError(message: string): string {
+  if (message.includes("not the group owner")) {
+    return "この操作はグループのオーナーのみ行えます。";
+  }
+  if (message.includes("group size limit exceeded")) {
+    return "グループの人数上限を超えています。";
+  }
+  if (message.includes("member not found")) {
+    return "選択したメンバーが見つかりませんでした。";
+  }
+  if (message.includes("blocked")) {
+    return "ブロック関係にあるメンバーが含まれているため追加できません。";
+  }
+  if (message.includes("no new members to add")) {
+    return "追加できる新しいメンバーがいません。";
+  }
+  return "メンバーの追加に失敗しました。時間をおいて再度お試しください。";
+}
+
 /**
  * FR-20「各チャット」スコープ：このチャットに自分の追加認証を要求するかのトグル。
  * set_room_auth_required RPCで自分自身のroom_members行のauth_requiredのみ更新する
@@ -259,4 +282,163 @@ export async function createGroupRoom(
   }
 
   redirect(`/chat/${roomId}`);
+}
+
+/**
+ * Phase 21: グループチャットメンバー管理M2。オーナーが既存グループへメンバーを追加する。
+ * createGroupRoomと異なりredirect()しない（同じチャット画面に留まるため）。
+ * components/chat/GroupMembersPanel.tsxから呼ばれ、成功時は呼び出し元がローカルな
+ * members状態を楽観的に更新する（GatedChatRoomLoader経由のグループではrouter.refresh()が
+ * 効かない＝サーバー側のpeer propが更新されないため、ローカルstate更新方式に一本化した）。
+ */
+export async function addGroupMembers(
+  roomId: string,
+  memberIds: string[],
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const uniqueIds = Array.from(new Set(memberIds)).filter(
+    (id) => id !== user.id,
+  );
+
+  if (uniqueIds.length === 0) {
+    return { success: false, error: "追加するメンバーを選択してください。" };
+  }
+
+  const { error } = await supabase.rpc("add_group_members", {
+    p_room_id: roomId,
+    p_member_ids: uniqueIds,
+  });
+
+  if (error) {
+    return { success: false, error: mapAddMembersError(error.message) };
+  }
+
+  revalidatePath(`/chat/${roomId}`);
+  return { success: true };
+}
+
+/**
+ * Phase 21: オーナーが非オーナーメンバーを削除する。room_members_delete_self_or_ownerの
+ * RLSが実際のセキュリティ境界（user_id=自分 or 自分がowner）であり、ここでのロール
+ * チェックは分かりやすい日本語エラーを早期に返すための多層防御に過ぎない（RPC不要。
+ * 単一行DELETEに複数行アトミック性の要件が無いため）。
+ */
+export async function removeGroupMember(
+  roomId: string,
+  targetUserId: string,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  if (targetUserId === user.id) {
+    return {
+      success: false,
+      error: "自分自身を削除することはできません。退出機能を使ってください。",
+    };
+  }
+
+  const { data: myRow } = await supabase
+    .from("room_members")
+    .select("role")
+    .eq("room_id", roomId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (myRow?.role !== "owner") {
+    return {
+      success: false,
+      error: "この操作はグループのオーナーのみ行えます。",
+    };
+  }
+
+  const { data: targetRow } = await supabase
+    .from("room_members")
+    .select("role")
+    .eq("room_id", roomId)
+    .eq("user_id", targetUserId)
+    .maybeSingle();
+
+  if (targetRow?.role === "owner") {
+    // 理論上到達しない（オーナーは1人のみ）が念のための防御チェック
+    return {
+      success: false,
+      error: "オーナーを削除することはできません。",
+    };
+  }
+
+  const { error } = await supabase
+    .from("room_members")
+    .delete()
+    .eq("room_id", roomId)
+    .eq("user_id", targetUserId);
+
+  if (error) {
+    return { success: false, error: "メンバーの削除に失敗しました。" };
+  }
+
+  revalidatePath(`/chat/${roomId}`);
+  return { success: true };
+}
+
+/**
+ * Phase 21: 非オーナーメンバーが自らグループを退出する。オーナーの退出はM2スコープ外
+ * （UIでボタン自体を隠すが、ここでも多層防御として弾く）。成功後は自分がこのroomの
+ * is_room_memberでなくなりRLS上ルームが見えなくなるため、呼び出し元
+ * （ChatRoomOptionsMenu.tsxのhandleCloseTempChatと同じパターン）でrouter.push("/home")する。
+ */
+export async function leaveGroup(roomId: string): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const { data: myRow } = await supabase
+    .from("room_members")
+    .select("role")
+    .eq("room_id", roomId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (!myRow) {
+    return { success: false, error: "このグループのメンバーではありません。" };
+  }
+
+  if (myRow.role === "owner") {
+    return {
+      success: false,
+      error: "オーナーはグループから退出できません。",
+    };
+  }
+
+  const { error } = await supabase
+    .from("room_members")
+    .delete()
+    .eq("room_id", roomId)
+    .eq("user_id", user.id);
+
+  if (error) {
+    return { success: false, error: "グループの退出に失敗しました。" };
+  }
+
+  revalidatePath(`/chat/${roomId}`);
+  revalidatePath("/home");
+  return { success: true };
 }

@@ -5,20 +5,27 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { closeTempChat, toggleRoomAuthRequired } from "@/app/actions/rooms";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
+import type { ChatPeer } from "./ChatRoom";
 
 /**
  * チャットオプションメニュー（Phase 6）。
  * FR-18の非表示一覧への導線、FR-20「各チャット」スコープの個人用ロックトグル、
  * 一時チャットの場合はFR-10の「チャットを閉じる」をまとめる。
+ * Phase 21: グループの場合のみ「メンバー一覧」エントリを表示する
+ * （新ルートは作らず、onOpenMembersでChatRoom.tsx側のモーダルを開くだけ）。
  */
 export function ChatRoomOptionsMenu({
   roomId,
   initialAuthRequired,
   isTemporary,
+  peer,
+  onOpenMembers,
 }: {
   roomId: string;
   initialAuthRequired: boolean;
   isTemporary: boolean;
+  peer: ChatPeer;
+  onOpenMembers: () => void;
 }) {
   const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -111,6 +118,18 @@ export function ChatRoomOptionsMenu({
           >
             非表示メッセージ一覧
           </Link>
+          {peer.kind === "group" && (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenMembers();
+                setOpen(false);
+              }}
+              className="px-3 py-2 text-left text-ink transition-colors hover:bg-band/30"
+            >
+              メンバー一覧
+            </button>
+          )}
           <button
             type="button"
             onClick={toggleAuthRequired}

@@ -27,6 +27,7 @@ import {
 import { blockUser, unblockUser } from "@/app/actions/blocks";
 import { deleteMessage, hideMessage } from "@/app/actions/messages";
 import { ChatRoomOptionsMenu } from "./ChatRoomOptionsMenu";
+import { GroupMembersPanel } from "./GroupMembersPanel";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 type MessageRow = Tables<"messages">;
@@ -85,6 +86,9 @@ function formatDateDividerLabel(iso: string) {
 // Phase 19: グループチャットUI M1。「相手」を単一のDM相手だけでなく複数人の
 // グループメンバーも表せるよう判別共用体にした（従来の`otherUser`から`peer`へ改名。
 // 複数人を表すのに"other user"は単数感が強すぎるため）。
+// Phase 21: グループメンバー管理M2。membersに自分を含む全メンバー（role付き）を
+// 持たせるよう変更した（メンバー管理パネルで「自分がオーナーか」「誰がオーナーか」を
+// 判定する必要があるため）。memberCountはmembers.lengthで代替できるため削除した。
 export type ChatPeer =
   | {
       kind: "dm";
@@ -96,8 +100,7 @@ export type ChatPeer =
   | {
       kind: "group";
       roomName: string | null;
-      memberCount: number;
-      members: { id: string; displayName: string }[];
+      members: { id: string; displayName: string; role: "owner" | "member" }[];
     };
 
 type ChatRoomProps = {
@@ -139,6 +142,16 @@ export function ChatRoom({
   const [isBlockedByMe, setIsBlockedByMe] = useState(initialIsBlockedByMe);
   const [blockPending, startBlockTransition] = useTransition();
   const [blockError, setBlockError] = useState<string | null>(null);
+
+  // Phase 21: グループメンバー管理M2。peer.membersをpropsから1回だけ初期化し、
+  // 以降はメンバー追加・削除の結果をローカルで反映する（router.refresh()は
+  // GatedChatRoomLoader経由のグループでは効かないため、ローカルstate更新に一本化した）。
+  // ヘッダー表示・memberNameById・isGroupOwnerの導出は全てpeer.membersではなく
+  // このgroupMembersを参照する（追加・削除後に即座に一致させるため）。
+  const [groupMembers, setGroupMembers] = useState(() =>
+    peer.kind === "group" ? peer.members : [],
+  );
+  const [membersOpen, setMembersOpen] = useState(false);
 
   // Phase 6: メッセージ削除（FR-16）・非表示（FR-17）。
   // 非表示は自分の画面にのみ影響するローカルなフィルタなのでRealtime購読は不要。
@@ -527,13 +540,20 @@ export function ChatRoom({
   const blockGateActive = peer.kind === "dm" && isBlockedByMe;
 
   // Phase 19: グループチャットで自分以外のメッセージに送信者名を表示するためのマップ。
+  // Phase 21: groupMembers（自分を含む）から作るが、!isOwnの場合のみ参照されるため
+  // 自分の行が含まれていても実害は無い（フィルタ不要）。
   const memberNameById = useMemo(
     () =>
       peer.kind === "group"
-        ? new Map(peer.members.map((m) => [m.id, m.displayName]))
+        ? new Map(groupMembers.map((m) => [m.id, m.displayName]))
         : null,
-    [peer],
+    [peer, groupMembers],
   );
+
+  // Phase 21: グループメンバー管理M2。自分がオーナーかどうかの判定。
+  const isGroupOwner =
+    peer.kind === "group" &&
+    groupMembers.some((m) => m.id === currentUserId && m.role === "owner");
 
   const canSend =
     !sending &&
@@ -558,20 +578,26 @@ export function ChatRoom({
             </div>
           </>
         ) : (
-          // Phase 19: グループチャットのヘッダー。名前が無い場合はメンバー名の連結で代替する。
+          // Phase 19: グループチャットのヘッダー。名前が無い場合はメンバー名の連結で代替する
+          // （Phase 21: groupMembersは自分を含むため、名前結合のみ自分を除外して
+          // M1時点の見た目を維持する。アバター文字フォールバックは誰の頭文字でも
+          // 実害が無いためgroupMembers[0]のままでよい）。
           <>
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
               {(peer.roomName?.slice(0, 1) ??
-                peer.members[0]?.displayName.slice(0, 1)) ||
+                groupMembers[0]?.displayName.slice(0, 1)) ||
                 "G"}
             </div>
             <div className="min-w-0">
               <p className="truncate font-medium text-ink">
                 {peer.roomName ??
-                  peer.members.map((m) => m.displayName).join("、")}
+                  groupMembers
+                    .filter((m) => m.id !== currentUserId)
+                    .map((m) => m.displayName)
+                    .join("、")}
               </p>
               <p className="truncate text-xs text-ink-muted">
-                {peer.memberCount}人
+                {groupMembers.length}人
               </p>
             </div>
           </>
@@ -591,9 +617,21 @@ export function ChatRoom({
             roomId={roomId}
             initialAuthRequired={initialAuthRequired}
             isTemporary={isTemporary}
+            peer={peer}
+            onOpenMembers={() => setMembersOpen(true)}
           />
         </div>
       </header>
+      {membersOpen && peer.kind === "group" && (
+        <GroupMembersPanel
+          roomId={roomId}
+          currentUserId={currentUserId}
+          members={groupMembers}
+          isOwner={isGroupOwner}
+          onMembersChange={setGroupMembers}
+          onClose={() => setMembersOpen(false)}
+        />
+      )}
       {blockError && (
         <p
           className="border-b border-band/60 px-4 py-2 text-xs text-clay"

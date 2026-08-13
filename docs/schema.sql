@@ -1492,3 +1492,96 @@ $$;
 revoke execute on function public.get_group_conversation_list() from public;
 grant execute on function public.get_group_conversation_list() to authenticated;
 revoke execute on function public.get_group_conversation_list() from anon;
+
+-- =============================================================================
+-- Phase 21: グループチャットメンバー管理M2（FR-4続き）— メンバー追加RPC
+-- 適用済み（Supabase MCP: apply_migration "phase21_group_member_management_m2"）。
+-- メンバー削除・退出には新規RPCは不要（room_members_delete_self_or_ownerのRLSが
+-- 既に自己削除・オーナーによる削除の両方を許可しており、単一行DELETEにアトミック性の
+-- 要件が無いため、app/actions/rooms.ts内のServer Actionで素のテーブル操作を行う）。
+-- -----------------------------------------------------------------------------
+
+-- add_group_members: オーナーのみが呼べる、既存グループへの複数メンバー追加RPC。
+-- room_members_insert_self_or_ownerのRLSは生insertでもオーナーによる追加を許可するが、
+-- 全ペアのブロック関係チェック・人数上限チェックはRLSで表現できないため、
+-- create_group_roomと同じsecurity definerパターンをここでも踏襲する。
+create or replace function public.add_group_members(
+  p_room_id uuid,
+  p_member_ids uuid[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_self uuid := auth.uid();
+  v_is_group boolean;
+  v_new_ids uuid[];
+  v_current_ids uuid[];
+  v_current_count int;
+  v_new_count int;
+  v_member_id uuid;
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not public.is_room_owner(p_room_id) then
+    raise exception 'not the group owner';
+  end if;
+
+  select is_group into v_is_group from public.rooms where id = p_room_id;
+  if v_is_group is not true then
+    raise exception 'not a group room';
+  end if;
+
+  select array_agg(user_id) into v_current_ids
+  from public.room_members
+  where room_id = p_room_id;
+
+  -- 重複除去・自己除外・既存メンバー除外を一度に行う（既にメンバーのIDはサイレントに
+  -- スキップする。エラーにする実益が無い＝結果として「そのユーザーがメンバーである」
+  -- という状態は同じであり、UIの複数選択チェックボックスと相性が悪いため）。
+  select array_agg(distinct uid) into v_new_ids
+  from unnest(coalesce(p_member_ids, array[]::uuid[])) as uid
+  where uid <> v_self
+    and not (uid = any(coalesce(v_current_ids, array[]::uuid[])));
+
+  v_new_count := coalesce(array_length(v_new_ids, 1), 0);
+  if v_new_count = 0 then
+    raise exception 'no new members to add';
+  end if;
+
+  v_current_count := coalesce(array_length(v_current_ids, 1), 0);
+  if v_current_count + v_new_count > 50 then
+    raise exception 'group size limit exceeded';
+  end if;
+
+  if (select count(*) from public.profiles where id = any(v_new_ids))
+      <> v_new_count then
+    raise exception 'member not found';
+  end if;
+
+  -- 新規メンバー同士、および新規⇔既存の総当たりのみチェックする（既存メンバー同士は
+  -- 作成時/過去の追加時に検証済みのため対象外。is_blockedは対称なので順序は問わない）。
+  if exists (
+    select 1
+    from unnest(v_new_ids) a(user_id)
+    join unnest(v_new_ids || coalesce(v_current_ids, array[]::uuid[])) b(user_id)
+      on a.user_id <> b.user_id
+    where public.is_blocked(a.user_id, b.user_id)
+  ) then
+    raise exception 'cannot add members: blocked member pair';
+  end if;
+
+  foreach v_member_id in array v_new_ids loop
+    insert into public.room_members (room_id, user_id, role)
+    values (p_room_id, v_member_id, 'member');
+  end loop;
+end;
+$$;
+
+revoke execute on function public.add_group_members(uuid, uuid[]) from public;
+grant execute on function public.add_group_members(uuid, uuid[]) to authenticated;
+revoke execute on function public.add_group_members(uuid, uuid[]) from anon;

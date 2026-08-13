@@ -1,0 +1,346 @@
+"use client";
+
+import { useEffect, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
+import {
+  addGroupMembers,
+  leaveGroup,
+  removeGroupMember,
+} from "@/app/actions/rooms";
+import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
+
+type GroupMember = {
+  id: string;
+  displayName: string;
+  role: "owner" | "member";
+};
+
+type SearchResult = {
+  userId: string;
+  username: string;
+  displayName: string;
+};
+
+const SEARCH_DEBOUNCE_MS = 300;
+
+/**
+ * Phase 21: グループチャットメンバー管理M2。ChatRoom.tsxからモーダルとして開かれる
+ * （新ルートは作らない。既にゲート通過後にのみレンダリングされるChatRoom.tsx配下に
+ * 置くことで、Phase 18で修正した「起動時ゲートの独立チェック漏れ」というバグ種別を
+ * 再導入しない設計）。メンバー一覧表示・オーナーによる追加/削除・非オーナーの退出を
+ * まとめる。メンバー追加は`CreateGroupPanel.tsx`と同じsearch_users検索パターンを
+ * 流用するが、グループ名入力・選択数の下限は無い（1人からでも追加可）。
+ */
+export function GroupMembersPanel({
+  roomId,
+  currentUserId,
+  members,
+  isOwner,
+  onMembersChange,
+  onClose,
+}: {
+  roomId: string;
+  currentUserId: string;
+  members: GroupMember[];
+  isOwner: boolean;
+  onMembersChange: (next: GroupMember[]) => void;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removePending, startRemoveTransition] = useTransition();
+  const [leaving, setLeaving] = useState(false);
+
+  const [addOpen, setAddOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [selected, setSelected] = useState<Map<string, SearchResult>>(
+    new Map(),
+  );
+  const [addPending, startAddTransition] = useTransition();
+  const [supabase] = useState(() => createClient());
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!addOpen) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    const trimmed = query.trim();
+    if (trimmed.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+
+    setSearching(true);
+    debounceRef.current = setTimeout(() => {
+      void (async () => {
+        const { data, error: searchError } = await supabase.rpc(
+          "search_users",
+          { p_query: trimmed },
+        );
+        setSearching(false);
+        if (searchError || !data) {
+          setResults([]);
+          return;
+        }
+        const memberIds = new Set(members.map((m) => m.id));
+        setResults(
+          data
+            .filter((row) => !memberIds.has(row.user_id))
+            .map((row) => ({
+              userId: row.user_id,
+              username: row.username,
+              displayName: row.display_name,
+            })),
+        );
+      })();
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query, supabase, addOpen, members]);
+
+  function toggleSelected(user: SearchResult) {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (next.has(user.userId)) {
+        next.delete(user.userId);
+      } else {
+        next.set(user.userId, user);
+      }
+      return next;
+    });
+  }
+
+  function handleAddMembers() {
+    if (selected.size === 0 || addPending) return;
+    setError(null);
+    startAddTransition(async () => {
+      try {
+        const result = await addGroupMembers(
+          roomId,
+          Array.from(selected.keys()),
+        );
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        const added: GroupMember[] = Array.from(selected.values()).map(
+          (u) => ({ id: u.userId, displayName: u.displayName, role: "member" }),
+        );
+        onMembersChange([...members, ...added]);
+        setSelected(new Map());
+        setQuery("");
+        setResults([]);
+        setAddOpen(false);
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
+      }
+    });
+  }
+
+  function handleRemove(member: GroupMember) {
+    if (
+      !window.confirm(`${member.displayName}をグループから削除しますか？`)
+    ) {
+      return;
+    }
+    setError(null);
+    setRemovingId(member.id);
+    startRemoveTransition(async () => {
+      try {
+        const result = await removeGroupMember(roomId, member.id);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        onMembersChange(members.filter((m) => m.id !== member.id));
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
+      } finally {
+        setRemovingId(null);
+      }
+    });
+  }
+
+  function handleLeave() {
+    if (leaving) return;
+    if (!window.confirm("このグループから退出しますか？")) return;
+    setError(null);
+    setLeaving(true);
+    void (async () => {
+      try {
+        const result = await leaveGroup(roomId);
+        if (!result.success) {
+          setError(result.error);
+          setLeaving(false);
+          return;
+        }
+        router.push("/home");
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
+        setLeaving(false);
+      }
+    })();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-20 flex items-center justify-center bg-ink/40 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex w-full max-w-sm flex-col gap-3 rounded-lg border border-band bg-surface-raised p-4"
+      >
+        <div className="flex items-center justify-between">
+          <p className="font-display text-sm font-semibold text-ink">
+            メンバー一覧
+          </p>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="閉じる"
+            className="text-ink-muted transition-colors hover:text-ink"
+          >
+            ×
+          </button>
+        </div>
+
+        <ul className="flex max-h-60 flex-col gap-1 overflow-y-auto">
+          {members.map((member) => (
+            <li
+              key={member.id}
+              className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-sm text-ink">
+                  {member.displayName}
+                </span>
+                {member.role === "owner" && (
+                  <span className="shrink-0 rounded-full border border-tongue/60 bg-tongue/10 px-1.5 py-0.5 font-label text-[10px] text-tongue">
+                    オーナー
+                  </span>
+                )}
+              </span>
+              {isOwner &&
+                member.role !== "owner" &&
+                member.id !== currentUserId && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(member)}
+                    disabled={removePending && removingId === member.id}
+                    className="shrink-0 rounded-lg border border-band px-2 py-1 font-label text-[10px] text-ink-muted transition-colors hover:bg-surface disabled:opacity-60"
+                  >
+                    削除
+                  </button>
+                )}
+            </li>
+          ))}
+        </ul>
+
+        {isOwner && (
+          <div className="flex flex-col gap-2 border-t border-band/60 pt-3">
+            <button
+              type="button"
+              onClick={() => setAddOpen((prev) => !prev)}
+              className="text-left text-xs text-tongue"
+            >
+              {addOpen ? "閉じる" : "＋ メンバーを追加"}
+            </button>
+            {addOpen && (
+              <div className="flex flex-col gap-2">
+                {selected.size > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {Array.from(selected.values()).map((user) => (
+                      <button
+                        key={user.userId}
+                        type="button"
+                        onClick={() => toggleSelected(user)}
+                        className="flex items-center gap-1 rounded-full border border-tongue/60 bg-tongue/10 px-2 py-1 font-label text-[10px] text-tongue"
+                      >
+                        {user.displayName}
+                        <span aria-hidden="true">×</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="ユーザーIDで検索"
+                  aria-label="追加するユーザーを検索"
+                  className="w-full rounded-lg border border-band bg-surface px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+                />
+                {searching && (
+                  <p className="text-xs text-ink-muted">検索中...</p>
+                )}
+                {!searching &&
+                  query.trim().length > 0 &&
+                  results.length === 0 && (
+                    <p className="text-xs text-ink-muted">
+                      ユーザーが見つかりませんでした。
+                    </p>
+                  )}
+                {results.length > 0 && (
+                  <ul className="flex max-h-32 flex-col gap-1 overflow-y-auto">
+                    {results.map((user) => (
+                      <li key={user.userId}>
+                        <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-ink transition-colors hover:bg-surface">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(user.userId)}
+                            onChange={() => toggleSelected(user)}
+                            className="shrink-0"
+                          />
+                          <span className="min-w-0 truncate">
+                            {user.displayName}
+                            <span className="ml-1 text-xs text-ink-muted">
+                              @{user.username}
+                            </span>
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <button
+                  type="button"
+                  onClick={handleAddMembers}
+                  disabled={selected.size === 0 || addPending}
+                  className="rounded-lg bg-tongue px-3 py-1.5 text-xs font-medium text-white transition-opacity disabled:opacity-60"
+                >
+                  {addPending ? "追加中..." : "追加する"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!isOwner && (
+          <button
+            type="button"
+            onClick={handleLeave}
+            disabled={leaving}
+            className="rounded-lg border border-clay px-3 py-1.5 text-xs text-clay transition-colors hover:bg-clay/10 disabled:opacity-60"
+          >
+            {leaving ? "退出中..." : "退出する"}
+          </button>
+        )}
+
+        {error && (
+          <p className="text-xs text-clay" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
