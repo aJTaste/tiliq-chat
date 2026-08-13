@@ -64,6 +64,23 @@ function mapAddMembersError(message: string): string {
   return "メンバーの追加に失敗しました。時間をおいて再度お試しください。";
 }
 
+// Phase 22: グループチャットM3（オーナー譲渡・グループ削除）。transfer_group_ownership
+// RPCのエラーメッセージを日本語化する。mapAddMembersErrorを使い回さない理由：既存の
+// 文言が「追加」に紐づいており（「追加できません」等）、譲渡の文脈では不自然になる
+// ため（mapGroupError/mapAddMembersErrorの分離と同じ判断）。
+function mapTransferOwnershipError(message: string): string {
+  if (message.includes("not the group owner")) {
+    return "この操作はグループのオーナーのみ行えます。";
+  }
+  if (message.includes("already the owner")) {
+    return "すでにオーナーです。";
+  }
+  if (message.includes("target not a member")) {
+    return "選択した相手はこのグループのメンバーではありません。";
+  }
+  return "オーナーの譲渡に失敗しました。時間をおいて再度お試しください。";
+}
+
 /**
  * FR-20「各チャット」スコープ：このチャットに自分の追加認証を要求するかのトグル。
  * set_room_auth_required RPCで自分自身のroom_members行のauth_requiredのみ更新する
@@ -395,8 +412,10 @@ export async function removeGroupMember(
 }
 
 /**
- * Phase 21: 非オーナーメンバーが自らグループを退出する。オーナーの退出はM2スコープ外
- * （UIでボタン自体を隠すが、ここでも多層防御として弾く）。成功後は自分がこのroomの
+ * Phase 21: 非オーナーメンバーが自らグループを退出する。
+ * Phase 22: オーナーは直接退出できない設計を維持（ゼロオーナー状態・自動オーナー継承は
+ * 許容しない設計判断）。先にtransferGroupOwnershipでオーナー権を譲渡してから、通常の
+ * メンバーとして本関数を呼ぶ二段階フローとする。成功後は自分がこのroomの
  * is_room_memberでなくなりRLS上ルームが見えなくなるため、呼び出し元
  * （ChatRoomOptionsMenu.tsxのhandleCloseTempChatと同じパターン）でrouter.push("/home")する。
  */
@@ -424,7 +443,7 @@ export async function leaveGroup(roomId: string): Promise<ActionResult> {
   if (myRow.role === "owner") {
     return {
       success: false,
-      error: "オーナーはグループから退出できません。",
+      error: "オーナーはグループから退出できません。先にオーナーを譲渡してください。",
     };
   }
 
@@ -439,6 +458,91 @@ export async function leaveGroup(roomId: string): Promise<ActionResult> {
   }
 
   revalidatePath(`/chat/${roomId}`);
+  revalidatePath("/home");
+  return { success: true };
+}
+
+/**
+ * Phase 22: グループチャットM3。現オーナーが別の既存メンバーへオーナー権を譲渡する。
+ * transfer_group_ownership RPCが対象の存在確認・自己譲渡拒否等を全て検証するため、
+ * ここでの事前チェックは行わない（addGroupMembersと同じ形）。
+ */
+export async function transferGroupOwnership(
+  roomId: string,
+  newOwnerId: string,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const { error } = await supabase.rpc("transfer_group_ownership", {
+    p_room_id: roomId,
+    p_new_owner_id: newOwnerId,
+  });
+
+  if (error) {
+    return {
+      success: false,
+      error: mapTransferOwnershipError(error.message),
+    };
+  }
+
+  revalidatePath(`/chat/${roomId}`);
+  return { success: true };
+}
+
+/**
+ * Phase 22: グループチャットM3。オーナーがグループを完全に削除する。
+ * rooms_delete_ownerのRLS（is_room_owner(id)）が実際のセキュリティ境界であり、
+ * ここでのis_group確認・ロールチェックは分かりやすい日本語エラーのための多層防御と、
+ * DM削除への転用を防ぐガードに過ぎない（RPC不要。room_members/messagesは
+ * on delete cascadeで連鎖削除される）。
+ */
+export async function deleteGroup(roomId: string): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const { data: room } = await supabase
+    .from("rooms")
+    .select("is_group")
+    .eq("id", roomId)
+    .maybeSingle();
+
+  if (!room?.is_group) {
+    return { success: false, error: "グループチャットが見つかりません。" };
+  }
+
+  const { data: myRow } = await supabase
+    .from("room_members")
+    .select("role")
+    .eq("room_id", roomId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (myRow?.role !== "owner") {
+    return {
+      success: false,
+      error: "この操作はグループのオーナーのみ行えます。",
+    };
+  }
+
+  const { error } = await supabase.from("rooms").delete().eq("id", roomId);
+
+  if (error) {
+    return { success: false, error: "グループの削除に失敗しました。" };
+  }
+
   revalidatePath("/home");
   return { success: true };
 }

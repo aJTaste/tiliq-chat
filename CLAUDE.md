@@ -1163,8 +1163,51 @@ M2のスコープ：メンバー一覧表示（オーナーバッジ付き）・
 
 ### 未対応・持ち越し事項（Phase 21時点）
 
-- オーナーの退出・オーナー譲渡・グループ削除は引き続き未実装（M2でも明示的にスコープ外のまま）
+- オーナーの退出・オーナー譲渡・グループ削除は引き続き未実装（M2でも明示的にスコープ外のまま）→ **Phase 22で対応**
 - `messages_insert_member_not_blocked`の「誰か1人ブロックで全体送信停止」という過剰に強い挙動は引き続き既知の制限として残置
+- サイドバー内部UI再設計・小粒課題群は引き続き別のバックログ項目のまま（ユーザーの好みの確認待ち）
+
+## Phase 22 の実装内容・詳細
+
+Phase 21（グループチャットメンバー管理M2）で明示的にスコープ外とした「オーナーの退出・オーナー譲渡・グループ削除」（M3）に着手。ユーザーから「次に何をやるべきか、自律的に計画してください」との指示を受けた。残バックログのうちサイドバー内部UI再設計・小粒課題群はユーザーの主観的な好みの確認が必要、自動テスト基盤導入は影響範囲の大きいツール選定判断のため次回相談すべき事項と判断し、機能追加として自然な続きである本項目（M1→M2→M3の流れ）を選んだ。
+
+M3のスコープ：オーナーが別の既存メンバーへオーナー権を譲渡する機能、グループ削除機能。「オーナーの退出」は独立機能としては作らず、**譲渡してから既存の`leaveGroup`で退出する二段階フロー**として実現した（ゼロオーナー状態・自動オーナー継承は許容しない設計判断）。
+
+### 設計上の重要な技術的知見
+
+`room_members_update_owner`のRLS（`using (is_room_owner(room_id)) with check (is_room_owner(room_id))`）は、`is_room_owner`が「呼び出し者自身の行がowner役割か」をチェックするため、オーナーが自分自身の行を`owner`→`member`に更新しようとすると、`WITH CHECK`の再評価時点で既に呼び出し者はownerでなくなっており自己参照的に失敗する（`create_group_room`が最初のowner行挿入のためにRPCを要した「chicken-and-egg」問題と構造的に同じ）。そのため素のテーブルUPDATEでは実現不可能で、新規`transfer_group_ownership` RPC（security definer、RLSを完全にバイパスして2行のUPDATEをアトミックに行う）が必要だった。
+
+一方グループ削除は既存の`rooms_delete_owner`RLS（`using (is_room_owner(id))`）が単一行DELETEを既に許可しており、`rooms`→`room_members`/`messages`のカスケード削除（`on delete cascade`）も効くため、**新規RPCは不要**（Server Action内の素のテーブル操作で十分。Phase 21のメンバー削除・退出と同じ理由）。
+
+### DB変更（`docs/schema.sql`に追記済み。実際の適用はSupabase MCP `apply_migration` "phase22_group_ownership_transfer_deletion_m3"）
+
+新規RPC`transfer_group_ownership(p_room_id uuid, p_new_owner_id uuid)`のみ追加。既存パターン（security definer、`revoke from public`→`grant to authenticated`→`revoke from anon`の三点セット）を踏襲。
+
+### 変更ファイル
+
+- `app/actions/rooms.ts` — `transferGroupOwnership`・`deleteGroup`を追加。エラーマッピングは`mapAddMembersError`を使い回さず`mapTransferOwnershipError`を独立させた（`mapGroupError`/`mapAddMembersError`分離と同じ判断。既存文言が「追加」に紐づいており譲渡の文脈で不自然になるため）。`leaveGroup`のオーナー時エラーメッセージに「先にオーナーを譲渡してください。」を追記し、JSDocも二段階フローの説明に更新（M3で退出への導線が実在するようになったため、案内しないままだと実質的なUX後退になる）
+- `components/chat/GroupMembersPanel.tsx` — 各メンバー行に「オーナーを譲渡」ボタンを追加（既存の「削除」ボタンと同じ表示条件、`flex flex-wrap justify-end gap-1`で狭い幅でも折り返せるように）。「グループを削除」ボタンをオーナー専用セクション末尾に追加（既存の退出ボタンと同じ危険操作スタイル）
+
+**`components/chat/ChatRoom.tsx`・`components/chat/ChatRoomOptionsMenu.tsx`は無改修。** `isGroupOwner`は`groupMembers`（`ChatRoom.tsx`のローカルstate）から毎レンダー導出されるため、`onMembersChange`経由で`groupMembers`をパッチするだけでヘッダー・ボタン表示が自動的に正しく反映される（Phase 21で確立した設計の効果）。削除後の遷移も`GroupMembersPanel.tsx`が既に持つ`useRouter()`だけで完結する。
+
+### 設計判断・学び
+
+- **オーナー譲渡は`.map()`、追加/削除は`.filter()`/append。** 譲渡は行の追加・削除ではなく既存2行の`role`書き換えであるため、`GroupMembersPanel.tsx`の`onMembersChange`パッチロジックも`members.map(m => ...)`で自分を`member`に、対象を`owner`に書き換える形にした（既存の追加/削除ハンドラとは異なるデータ操作の性質）
+- **DB層の検証で「旧オーナーが権限を失い、新オーナーが権限を持つ」ことを実際にRPC呼び出しで確認した。** `transfer_group_ownership`を実際にコミットした上で、別トランザクションで旧オーナー（test1）が`add_group_members`を呼べなくなること・新オーナー（test2）が呼べるようになることをSupabase MCPの`execute_sql`で直接検証した（型・ロジックの正しさだけでなく、RLS側の実際の権限移行も確認）
+- **M3はM1/M2よりファイルtouch数が少なく完結した。** `ChatRoom.tsx`/`ChatRoomOptionsMenu.tsx`の無改修という設計上の帰結により、`app/actions/rooms.ts`と`GroupMembersPanel.tsx`の2ファイル＋1マイグレーションで完結した
+
+### 検証方法・実施内容
+
+- `npx tsc --noEmit`（エラー0件）
+- `npx eslint .`（エラー0件）
+- `rm -rf .next && npm run build`（クリーンビルド成功）
+- `get_advisors`（security・performance）：新規`transfer_group_ownership`は既存の全RPCと同じ想定内の情報レベル警告のみ、新規の問題は無し
+- Supabase MCPの`execute_sql`でDB層を直接検証：正常系（オーナー譲渡が成功しrole入れ替わりを確認）・異常系3パターン（非オーナー呼び出し・対象非メンバー・自己譲渡）・権限移行の実地確認（旧オーナー拒否・新オーナー許可）・グループ削除（オーナーによる削除成功＋カスケード削除・非オーナーによる削除がRLSで拒否）
+- 実機での一連のQA（オーナー譲渡のUI即時反映、譲渡後の退出、グループ削除、非オーナーには両操作が一切見えないこと）はユーザーによる実機確認待ち
+
+### 未対応・持ち越し事項（Phase 22時点）
+
+- グループ名の変更・アバター設定等、グループのプロフィール編集機能は引き続き未実装（M1〜M3のいずれのスコープにも含まれていない）
 - サイドバー内部UI再設計・小粒課題群は引き続き別のバックログ項目のまま（ユーザーの好みの確認待ち）
 
 ## 検討中のアイデア・未確定のPhase割り当て
@@ -1173,7 +1216,7 @@ M2のスコープ：メンバー一覧表示（オーナーバッジ付き）・
 
 ### 1. どのPhaseにも未割り当てのSRS要件
 
-- **グループチャットUI（FR-4）：** **Phase 19でM1（グループ作成・一覧表示・メッセージ送受信＋送信者名表示）、Phase 21でM2（メンバー一覧・追加・削除・退出）を実装済み。** 詳細は「Phase 19」「Phase 21 の実装内容・詳細」参照。オーナーの退出・オーナー譲渡・グループ削除は引き続き未実装（M2でもスコープ外、次のM-phase候補）。`messages_insert_member_not_blocked`ポリシーは「room内の他メンバーの誰か1人とでもブロック関係があれば送信不可」という設計のまま変更しておらず、グループでは「メンバーの誰か1人をブロックしただけで全体送信が止まる」という過剰に強い挙動が既知の制限として残っている（見直すならM4以降）
+- **グループチャットUI（FR-4）：** **Phase 19でM1（グループ作成・一覧表示・メッセージ送受信＋送信者名表示）、Phase 21でM2（メンバー一覧・追加・削除・退出）、Phase 22でM3（オーナー譲渡・グループ削除）を実装済み。** 詳細は「Phase 19」「Phase 21」「Phase 22 の実装内容・詳細」参照。グループ名変更・アバター設定等のプロフィール編集機能は未実装（次のM-phase候補）。`messages_insert_member_not_blocked`ポリシーは「room内の他メンバーの誰か1人とでもブロック関係があれば送信不可」という設計のまま変更しておらず、グループでは「メンバーの誰か1人をブロックしただけで全体送信が止まる」という過剰に強い挙動が既知の制限として残っている（見直すなら次のM-phase以降）
 - **テキスト送信失敗時の自動リトライ（SRS 3.4、最大3回）：** Phase 14で実装済み
 - **真の楽観的更新**（送信直後に仮IDで即座に表示 → サーバー確定後に差し替え）：Phase未割り当てのまま。体感速度に関わるため、Phase 7「低スペック最適化」とまとめるのが良さそうという話が出ている
 
@@ -1253,7 +1296,7 @@ Phase 17実装後の実機確認で、チャット切り替え時に約0.7秒の
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
 
-## ファイル構成（Phase 21時点）
+## ファイル構成（Phase 22時点）
 
 ```
 tiliq-chat/
@@ -1281,7 +1324,7 @@ tiliq-chat/
 │   └── actions/
 │       ├── auth.ts              # signup/login/logout Server Actions（Phase 2）
 │       ├── auth-secret.ts       # 追加認証（PIN/キー）設定・検証系 Server Actions（Phase 6・新規）
-│       ├── rooms.ts             # startDirectMessageWithUser（Phase 5）+ toggleRoomAuthRequired/closeTempChat/startTemporaryDirectMessage（Phase 6）（Phase 8でデッドコードのstartDirectMessageを削除、Phase 19でcreateGroupRoomを追加、Phase 21でaddGroupMembers/removeGroupMember/leaveGroupを追加）
+│       ├── rooms.ts             # startDirectMessageWithUser（Phase 5）+ toggleRoomAuthRequired/closeTempChat/startTemporaryDirectMessage（Phase 6）（Phase 8でデッドコードのstartDirectMessageを削除、Phase 19でcreateGroupRoomを追加、Phase 21でaddGroupMembers/removeGroupMember/leaveGroupを追加、Phase 22でtransferGroupOwnership/deleteGroupを追加）
 │       ├── friends.ts           # フレンド申請系 Server Actions（Phase 5。removeFriendはPhase 8でHomeTabs.tsxから呼び出し開始）
 │       ├── blocks.ts            # ブロック系 Server Actions（Phase 5）
 │       ├── messages.ts          # deleteMessage/hideMessage/unhideMessage（Phase 6・新規）
@@ -1317,7 +1360,7 @@ tiliq-chat/
 │   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6。Phase 8でtry/catch化・空状態・日付区切り等のUX修正、Phase 14でテキスト送信の自動リトライ（SRS 3.4）、Phase 17でルート要素をh-screenからh-full flex-1へ変更、Phase 19でotherUser単数propをpeer: ChatPeer判別共用体へ変更しグループ対応、Phase 21でgroupMembersローカルstate・メンバー管理モーダル配線を追加）
 │   │   ├── MessageBubble.tsx        # メッセージ表示・長押し/右クリックメニュー（Phase 3/4/6。Phase 8で画像alt修正、Phase 9でキーボード操作対応を追加、Phase 19でsenderName propを追加）
 │   │   ├── ChatRoomOptionsMenu.tsx  # チャットオプションメニュー（Phase 6・新規。Phase 8でtry/catch化・確認ダイアログ追加、Phase 21でpeer/onOpenMembers propsとグループの場合の「メンバー一覧」エントリを追加）
-│   │   ├── GroupMembersPanel.tsx    # グループメンバー一覧・追加・削除・退出のモーダル（Phase 21・新規）
+│   │   ├── GroupMembersPanel.tsx    # グループメンバー一覧・追加・削除・退出のモーダル（Phase 21・新規。Phase 22でオーナー譲渡・グループ削除を追加）
 │   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規。Phase 8でメッセージ取得エラー処理を追加、Phase 18でDB問い合わせをPromise.allで並列化、Phase 19でisGroup propによるグループ/DM分岐を追加、Phase 21でグループ分岐にroleを追加）
 │   │   └── HiddenMessagesList.tsx   # 非表示メッセージ一覧本体（Phase 6・新規。Phase 8でtry/catch化・画像alt修正）
 │   └── home/                    # Phase 5・新規ディレクトリ
@@ -1342,9 +1385,9 @@ tiliq-chat/
 
 （`components/chat/NewDmForm.tsx`はPhase 5で`AddUserPanel`に統合されたため削除済み。`components/home/StrangerDmToggle.tsx`はPhase 7で`NotificationSettingsForm`に統合されたため削除済み。`app/actions/rooms.ts`の`startDirectMessage`関数はPhase 8でデッドコードとして削除済み。`components/home/HomeContent.tsx`はPhase 17で`components/shell/`へ移設・分割されたため削除済み）
 
-## 次にやること（Phase 21・未確定）
+## 次にやること（Phase 22・未確定）
 
-**Phase 15をもって、現行スコープでの「一旦完成・既知の問題なし」という区切りに到達した。** ここから先は新機能・仕様変更のラウンドとして扱う（ユーザー自身の言葉：「とりあえず完成、一旦問題はない、という状態に持っていって、そこから今後、新機能や仕様変更等の作業をする」）。Phase 16でUIバグ3件を修正しつつナビゲーション構造刷新の構想が寄せられ、Phase 17でその構想をNext.js実物ドキュメントで裏取りしたうえでM1（永続サイドバーシェルの骨組み）まで実装、Phase 18でチャット切り替え速度改善と起動時ゲートバイパス修正、Phase 19でグループチャットUI M1、Phase 20でeslint/typescript再チェック、Phase 21でグループチャットM2（メンバー管理）を実装した。
+**Phase 15をもって、現行スコープでの「一旦完成・既知の問題なし」という区切りに到達した。** ここから先は新機能・仕様変更のラウンドとして扱う（ユーザー自身の言葉：「とりあえず完成、一旦問題はない、という状態に持っていって、そこから今後、新機能や仕様変更等の作業をする」）。Phase 16でUIバグ3件を修正しつつナビゲーション構造刷新の構想が寄せられ、Phase 17でその構想をNext.js実物ドキュメントで裏取りしたうえでM1（永続サイドバーシェルの骨組み）まで実装、Phase 18でチャット切り替え速度改善と起動時ゲートバイパス修正、Phase 19でグループチャットUI M1、Phase 20でeslint/typescript再チェック、Phase 21でグループチャットM2（メンバー管理）、Phase 22でグループチャットM3（オーナー譲渡・グループ削除）を実装した。
 
 以下は次ラウンドの候補（優先度未確定）。ユーザーから「許可不要で計画→実装を繰り返してよい、コミットも自由に行ってよい」との承認済み（2026-08-12）のため、次回セッションでは基本的にこのリストから妥当なものを選んで自律的に進めてよい：
 
@@ -1355,6 +1398,7 @@ tiliq-chat/
 5. **実機フィードバックで見つかった小粒課題群：** 「検討中のアイデア」節4.参照（ホームへ戻るUI、一時チャットの命名・複数保持・チャット画面からの作成、スクロールバー、プロフィール概念、既読機能、タブUI統一方針）。優先度未確定のため、着手する場合はユーザーと相談のうえ妥当なものから選ぶ
 6. ~~`/chat/[roomId]/hidden/page.tsx`の起動時ゲートバイパス修正~~ → **Phase 18で対応済み（2026-08-13）。** 詳細は「Phase 18 の実装内容・詳細」内の該当節を参照。実機確認は次回ユーザー確認待ち
 7. ~~`eslint`（9→10）・`typescript`（6.0→7系）のメジャー更新の再挑戦~~ → **Phase 20で再チェック済み（2026-08-13）。継続ブロック、状況変化なし。** `eslint-plugin-react`のPR #4022は依然オープン（メンテナ最終アクション待ち）、TypeScript 7.1も未リリース。次回はPR #4022のマージ有無・TypeScript 7.1リリースから確認するとよい（詳細は「Phase 20 の実装内容・詳細」参照）
-8. ~~グループチャットUI M2（メンバー管理）~~ → **Phase 21で対応済み（2026-08-13）。** メンバー一覧・追加・削除・退出を実装。詳細は「Phase 21 の実装内容・詳細」参照。実機確認は次回ユーザー確認待ち。**残る候補（M3以降）：** オーナーの退出・オーナー譲渡・グループ削除、`messages_insert_member_not_blocked`の過剰に強いブロック挙動の見直し
+8. ~~グループチャットUI M2（メンバー管理）~~ → **Phase 21で対応済み（2026-08-13）。** メンバー一覧・追加・削除・退出を実装。詳細は「Phase 21 の実装内容・詳細」参照
+8b. ~~グループチャットUI M3（オーナー譲渡・グループ削除）~~ → **Phase 22で対応済み（2026-08-14）。** 詳細は「Phase 22 の実装内容・詳細」参照。実機確認は次回ユーザー確認待ち。**残る候補（M4以降）：** グループ名変更・アバター設定等のプロフィール編集機能、`messages_insert_member_not_blocked`の過剰に強いブロック挙動の見直し
 9. **デプロイ（将来・ユーザー指示待ち）：** Vercelへの本番デプロイ。`.env.example`を参考に環境変数を設定。SRS 2.5「無料プランでの運用を前提とする」を踏まえたVercelプランの確認。**ユーザーより明示的な指示済み（2026-08-12）：「デプロイは、私が指示しない限り行いません。数カ月後になると思います。」** 他の未実装機能が出揃った・地固めが済んだといった状況証拠だけでは着手判断とせず、自律的な計画→実装→コミットの承認範囲にもデプロイは含まれない。ユーザーから明示的な着手指示があるまでは、バックログに置いておくのみに留める
 10. **自動テスト基盤の導入：** Phase 15でユーザーに確認し、現時点では見送り・従来通りの手動QA運用継続で確定済み（`docs/srs.md` 3.9節にも運用実態を明記済み）。**この決定は蒸し返す必要はない。** グループチャットUI M1が実装され既存機能への影響範囲が実際に広がったため、次回セッションで改めて要否を検討する候補として繰り上げてもよい

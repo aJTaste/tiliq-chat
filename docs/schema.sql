@@ -1585,3 +1585,78 @@ $$;
 revoke execute on function public.add_group_members(uuid, uuid[]) from public;
 grant execute on function public.add_group_members(uuid, uuid[]) to authenticated;
 revoke execute on function public.add_group_members(uuid, uuid[]) from anon;
+
+-- =============================================================================
+-- Phase 22: グループチャットM3（FR-4続き）— オーナー譲渡RPC（グループ削除は新規RPC不要）
+-- 適用済み（Supabase MCP: apply_migration "phase22_group_ownership_transfer_deletion_m3"）。
+-- 「オーナーの退出」は独立機能として作らず、譲渡してから既存leaveGroupで退出する
+-- 二段階フローとする（ゼロオーナー状態・自動オーナー継承は許容しない設計判断）。
+--
+-- グループ削除は既存のrooms_delete_ownerポリシー（using (is_room_owner(id))）が
+-- 単一行DELETEを既に許可しており、rooms→room_members/messagesのカスケード削除
+-- （on delete cascade）も効くため、Phase 21のメンバー削除・退出と同様に新規RPCは
+-- 不要（app/actions/rooms.tsのdeleteGroupは素のテーブルDELETEで対応する）。
+--
+-- 一方オーナー譲渡は「メンバー削除・退出には新規RPCは不要」（上記Phase 21の注記）
+-- とは対照的に新規RPCが必要だった。room_members_update_ownerのRLS
+-- （using (is_room_owner(room_id)) with check (is_room_owner(room_id))）は
+-- 呼び出し者自身の行のroleを見るため、オーナーが自分の行をowner→memberに更新すると
+-- WITH CHECKの再評価時点で既にis_room_owner(room_id)がfalseになり自己参照的に失敗する
+-- （create_group_roomが最初のowner行挿入のためにRPCを要した「chicken-and-egg」問題と
+-- 構造的に同じ）。そのため素のテーブルUPDATEでは実現不可能。
+-- -----------------------------------------------------------------------------
+
+-- transfer_group_ownership: 現オーナーが別の既存メンバーへオーナー権を譲渡するRPC。
+-- security definerでRLSを完全にバイパスし、2行のUPDATEをアトミックに行う。
+create or replace function public.transfer_group_ownership(
+  p_room_id uuid,
+  p_new_owner_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_self uuid := auth.uid();
+  v_is_group boolean;
+  v_target_role text;
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not public.is_room_owner(p_room_id) then
+    raise exception 'not the group owner';
+  end if;
+
+  select is_group into v_is_group from public.rooms where id = p_room_id;
+  if v_is_group is not true then
+    raise exception 'not a group room';
+  end if;
+
+  if p_new_owner_id = v_self then
+    raise exception 'already the owner';
+  end if;
+
+  select role into v_target_role
+  from public.room_members
+  where room_id = p_room_id and user_id = p_new_owner_id;
+
+  if v_target_role is null then
+    raise exception 'target not a member';
+  end if;
+
+  update public.room_members
+  set role = 'member'
+  where room_id = p_room_id and user_id = v_self;
+
+  update public.room_members
+  set role = 'owner'
+  where room_id = p_room_id and user_id = p_new_owner_id;
+end;
+$$;
+
+revoke execute on function public.transfer_group_ownership(uuid, uuid) from public;
+grant execute on function public.transfer_group_ownership(uuid, uuid) to authenticated;
+revoke execute on function public.transfer_group_ownership(uuid, uuid) from anon;

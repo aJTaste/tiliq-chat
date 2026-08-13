@@ -413,6 +413,10 @@ export type Database = {
         Args: { p_required: boolean; p_room_id: string }
         Returns: undefined
       }
+      transfer_group_ownership: {
+        Args: { p_new_owner_id: string; p_room_id: string }
+        Returns: undefined
+      }
     }
     Enums: {
       [_ in never]: never

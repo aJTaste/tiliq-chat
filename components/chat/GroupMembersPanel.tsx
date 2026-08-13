@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
   addGroupMembers,
+  deleteGroup,
   leaveGroup,
   removeGroupMember,
+  transferGroupOwnership,
 } from "@/app/actions/rooms";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
@@ -31,6 +33,10 @@ const SEARCH_DEBOUNCE_MS = 300;
  * 再導入しない設計）。メンバー一覧表示・オーナーによる追加/削除・非オーナーの退出を
  * まとめる。メンバー追加は`CreateGroupPanel.tsx`と同じsearch_users検索パターンを
  * 流用するが、グループ名入力・選択数の下限は無い（1人からでも追加可）。
+ * Phase 22: オーナー譲渡・グループ削除を追加。ChatRoom.tsxのisGroupOwnerは
+ * groupMembers（このコンポーネントのonMembersChangeでパッチされる）から毎レンダー
+ * 導出されるため、譲渡成功時にmembersを書き換えるだけで自動的に反映される
+ * （ChatRoom.tsx・ChatRoomOptionsMenu.tsxは無改修）。
  */
 export function GroupMembersPanel({
   roomId,
@@ -52,6 +58,10 @@ export function GroupMembersPanel({
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [removePending, startRemoveTransition] = useTransition();
   const [leaving, setLeaving] = useState(false);
+  // Phase 22: グループチャットM3（オーナー譲渡・グループ削除）。
+  const [transferringId, setTransferringId] = useState<string | null>(null);
+  const [transferPending, startTransferTransition] = useTransition();
+  const [deleting, setDeleting] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -190,6 +200,67 @@ export function GroupMembersPanel({
     })();
   }
 
+  // Phase 22: グループチャットM3。オーナー譲渡。行の追加・削除ではなく2行のrole書き換えのため
+  // .filter()ではなく.map()を使う。
+  function handleTransferOwnership(member: GroupMember) {
+    if (
+      !window.confirm(
+        `${member.displayName}をオーナーにしますか？あなたはメンバーになります。`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    setTransferringId(member.id);
+    startTransferTransition(async () => {
+      try {
+        const result = await transferGroupOwnership(roomId, member.id);
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        onMembersChange(
+          members.map((m) => {
+            if (m.id === currentUserId) return { ...m, role: "member" };
+            if (m.id === member.id) return { ...m, role: "owner" };
+            return m;
+          }),
+        );
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
+      } finally {
+        setTransferringId(null);
+      }
+    });
+  }
+
+  function handleDeleteGroup() {
+    if (deleting) return;
+    if (
+      !window.confirm(
+        "このグループを完全に削除しますか？元に戻せません。全メンバーがこのグループにアクセスできなくなります。",
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    setDeleting(true);
+    void (async () => {
+      try {
+        const result = await deleteGroup(roomId);
+        if (!result.success) {
+          setError(result.error);
+          setDeleting(false);
+          return;
+        }
+        router.push("/home");
+      } catch {
+        setError(NETWORK_ERROR_MESSAGE);
+        setDeleting(false);
+      }
+    })();
+  }
+
   return (
     <div
       className="fixed inset-0 z-20 flex items-center justify-center bg-ink/40 backdrop-blur-sm"
@@ -232,14 +303,30 @@ export function GroupMembersPanel({
               {isOwner &&
                 member.role !== "owner" &&
                 member.id !== currentUserId && (
-                  <button
-                    type="button"
-                    onClick={() => handleRemove(member)}
-                    disabled={removePending && removingId === member.id}
-                    className="shrink-0 rounded-lg border border-band px-2 py-1 font-label text-[10px] text-ink-muted transition-colors hover:bg-surface disabled:opacity-60"
-                  >
-                    削除
-                  </button>
+                  <span className="flex shrink-0 flex-wrap justify-end gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleTransferOwnership(member)}
+                      disabled={
+                        transferPending && transferringId === member.id
+                      }
+                      className="rounded-lg border border-band px-2 py-1 font-label text-[10px] text-ink-muted transition-colors hover:bg-surface disabled:opacity-60"
+                    >
+                      {transferPending && transferringId === member.id
+                        ? "譲渡中..."
+                        : "オーナーを譲渡"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemove(member)}
+                      disabled={removePending && removingId === member.id}
+                      className="rounded-lg border border-band px-2 py-1 font-label text-[10px] text-ink-muted transition-colors hover:bg-surface disabled:opacity-60"
+                    >
+                      {removePending && removingId === member.id
+                        ? "削除中..."
+                        : "削除"}
+                    </button>
+                  </span>
                 )}
             </li>
           ))}
@@ -321,6 +408,18 @@ export function GroupMembersPanel({
                 </button>
               </div>
             )}
+
+            {/* Phase 22: グループチャットM3。オーナーの退出・オーナー譲渡・グループ削除の
+                「削除」だけがここに残る（退出はオーナー不可＝!isOwnerセクション側、
+                譲渡は各メンバー行）。既存の退出ボタンと同じ危険操作スタイルを使う。 */}
+            <button
+              type="button"
+              onClick={handleDeleteGroup}
+              disabled={deleting}
+              className="rounded-lg border border-clay px-3 py-1.5 text-xs text-clay transition-colors hover:bg-clay/10 disabled:opacity-60"
+            >
+              {deleting ? "削除中..." : "グループを削除"}
+            </button>
           </div>
         )}
 
