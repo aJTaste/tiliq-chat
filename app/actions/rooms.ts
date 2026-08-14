@@ -546,3 +546,80 @@ export async function deleteGroup(roomId: string): Promise<ActionResult> {
   revalidatePath("/home");
   return { success: true };
 }
+
+const GROUP_NAME_MAX_LENGTH = 50;
+const AVATAR_URL_MAX_LENGTH = 2000;
+
+/**
+ * Phase 24: グループチャットM4。オーナーがグループ名・アバター画像を編集する。
+ * name/avatar_urlの更新自体は既存のrooms_update_ownerポリシー（is_room_owner(id)）が
+ * 素のUPDATEでカバーするため新規RPCは不要（deleteGroupと同じ「RLSが実際の境界、
+ * ここでのis_group確認・ロールチェックは分かりやすい日本語エラーのための多層防御」
+ * という設計判断）。名前は空文字でnullにでき、create_group_room同様
+ * 「未設定ならメンバー名連結で表示」というフォールバックに合流する。
+ */
+export async function updateGroupProfile(
+  roomId: string,
+  input: { name: string; avatarUrl: string | null },
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const { data: room } = await supabase
+    .from("rooms")
+    .select("is_group")
+    .eq("id", roomId)
+    .maybeSingle();
+
+  if (!room?.is_group) {
+    return { success: false, error: "グループチャットが見つかりません。" };
+  }
+
+  const { data: myRow } = await supabase
+    .from("room_members")
+    .select("role")
+    .eq("room_id", roomId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (myRow?.role !== "owner") {
+    return {
+      success: false,
+      error: "この操作はグループのオーナーのみ行えます。",
+    };
+  }
+
+  const normalizedName = input.name.trim();
+  if (normalizedName.length > GROUP_NAME_MAX_LENGTH) {
+    return { success: false, error: "グループ名は50文字以内で入力してください。" };
+  }
+
+  if (
+    input.avatarUrl !== null &&
+    input.avatarUrl.length > AVATAR_URL_MAX_LENGTH
+  ) {
+    return { success: false, error: "アバター画像の設定に失敗しました。" };
+  }
+
+  const { error } = await supabase
+    .from("rooms")
+    .update({
+      name: normalizedName.length > 0 ? normalizedName : null,
+      avatar_url: input.avatarUrl,
+    })
+    .eq("id", roomId);
+
+  if (error) {
+    return { success: false, error: "グループ設定の更新に失敗しました。" };
+  }
+
+  revalidatePath(`/chat/${roomId}`);
+  revalidatePath("/home");
+  return { success: true };
+}

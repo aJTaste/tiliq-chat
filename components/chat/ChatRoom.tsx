@@ -100,6 +100,7 @@ export type ChatPeer =
   | {
       kind: "group";
       roomName: string | null;
+      avatarUrl: string | null;
       members: { id: string; displayName: string; role: "owner" | "member" }[];
     };
 
@@ -150,6 +151,14 @@ export function ChatRoom({
   // このgroupMembersを参照する（追加・削除後に即座に一致させるため）。
   const [groupMembers, setGroupMembers] = useState(() =>
     peer.kind === "group" ? peer.members : [],
+  );
+  // Phase 24: グループ名・アバターも同じ理由（GatedChatRoomLoader経由ではrouter.refresh()が
+  // 効かない）でローカルstateに一本化し、GroupMembersPanelのonProfileChangeで更新する。
+  const [groupName, setGroupName] = useState(() =>
+    peer.kind === "group" ? peer.roomName : null,
+  );
+  const [groupAvatarUrl, setGroupAvatarUrl] = useState(() =>
+    peer.kind === "group" ? peer.avatarUrl : null,
   );
   const [membersOpen, setMembersOpen] = useState(false);
 
@@ -582,15 +591,26 @@ export function ChatRoom({
           // （Phase 21: groupMembersは自分を含むため、名前結合のみ自分を除外して
           // M1時点の見た目を維持する。アバター文字フォールバックは誰の頭文字でも
           // 実害が無いためgroupMembers[0]のままでよい）。
+          // Phase 24: peer.roomName/peer.avatarUrlではなくローカルstateのgroupName/
+          // groupAvatarUrlを参照する（GroupMembersPanelでの編集を即時反映するため）。
           <>
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
-              {(peer.roomName?.slice(0, 1) ??
-                groupMembers[0]?.displayName.slice(0, 1)) ||
-                "G"}
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-band/60 font-label text-sm text-ink-muted">
+              {groupAvatarUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element -- next/imageは不採用（docs/lessons.md参照）。
+                <img
+                  src={groupAvatarUrl}
+                  alt=""
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                (groupName?.slice(0, 1) ??
+                  groupMembers[0]?.displayName.slice(0, 1)) ||
+                "G"
+              )}
             </div>
             <div className="min-w-0">
               <p className="truncate font-medium text-ink">
-                {peer.roomName ??
+                {groupName ??
                   groupMembers
                     .filter((m) => m.id !== currentUserId)
                     .map((m) => m.displayName)
@@ -628,7 +648,13 @@ export function ChatRoom({
           currentUserId={currentUserId}
           members={groupMembers}
           isOwner={isGroupOwner}
+          roomName={groupName}
+          avatarUrl={groupAvatarUrl}
           onMembersChange={setGroupMembers}
+          onProfileChange={(next) => {
+            setGroupName(next.roomName);
+            setGroupAvatarUrl(next.avatarUrl);
+          }}
           onClose={() => setMembersOpen(false)}
         />
       )}

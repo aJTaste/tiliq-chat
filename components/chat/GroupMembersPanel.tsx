@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
+import type { ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -9,8 +10,15 @@ import {
   leaveGroup,
   removeGroupMember,
   transferGroupOwnership,
+  updateGroupProfile,
 } from "@/app/actions/rooms";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
+import {
+  compressImage,
+  validateImageFile,
+  ImageValidationError,
+} from "@/lib/images/compress";
+import { uploadImageToCloudinary, ImageUploadError } from "@/lib/cloudinary/upload";
 
 type GroupMember = {
   id: string;
@@ -25,6 +33,9 @@ type SearchResult = {
 };
 
 const SEARCH_DEBOUNCE_MS = 300;
+// CreateGroupPanel.tsxと同じ上限値（create_group_room RPCの"group name too long"と揃える）。
+// 2箇所での定数複製はこのファイルの既存方針（mapAddMembersError等のコメント参照）に倣う。
+const GROUP_NAME_MAX_LENGTH = 50;
 
 /**
  * Phase 21: グループチャットメンバー管理M2。ChatRoom.tsxからモーダルとして開かれる
@@ -37,20 +48,29 @@ const SEARCH_DEBOUNCE_MS = 300;
  * groupMembers（このコンポーネントのonMembersChangeでパッチされる）から毎レンダー
  * 導出されるため、譲渡成功時にmembersを書き換えるだけで自動的に反映される
  * （ChatRoom.tsx・ChatRoomOptionsMenu.tsxは無改修）。
+ * Phase 24: グループ名・アバター編集（グループ設定セクション）を追加。画像選択は
+ * ChatRoom.tsxのselectedFile/previewUrlと同じ「選択直後はアップロードせずプレビューのみ、
+ * 保存ボタン押下時に初めてcompressImage→uploadImageToCloudinaryする」ステージング方式。
  */
 export function GroupMembersPanel({
   roomId,
   currentUserId,
   members,
   isOwner,
+  roomName,
+  avatarUrl,
   onMembersChange,
+  onProfileChange,
   onClose,
 }: {
   roomId: string;
   currentUserId: string;
   members: GroupMember[];
   isOwner: boolean;
+  roomName: string | null;
+  avatarUrl: string | null;
   onMembersChange: (next: GroupMember[]) => void;
+  onProfileChange: (next: { roomName: string | null; avatarUrl: string | null }) => void;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -62,6 +82,15 @@ export function GroupMembersPanel({
   const [transferringId, setTransferringId] = useState<string | null>(null);
   const [transferPending, startTransferTransition] = useTransition();
   const [deleting, setDeleting] = useState(false);
+
+  // Phase 24: グループ設定（名前・アバター）。
+  const [profileName, setProfileName] = useState(roomName ?? "");
+  const [stagedAvatarFile, setStagedAvatarFile] = useState<File | null>(null);
+  const [stagedAvatarPreviewUrl, setStagedAvatarPreviewUrl] = useState<
+    string | null
+  >(null);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const avatarFileInputRef = useRef<HTMLInputElement>(null);
 
   const [addOpen, setAddOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -261,6 +290,80 @@ export function GroupMembersPanel({
     })();
   }
 
+  // Phase 24: グループ設定。ChatRoom.tsxのclearSelectedImageと同じrevoke方式。
+  function clearStagedAvatar() {
+    setStagedAvatarFile(null);
+    setStagedAvatarPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }
+
+  function handleAvatarFileChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file) return;
+
+    try {
+      validateImageFile(file);
+    } catch (err) {
+      setError(
+        err instanceof ImageValidationError
+          ? err.message
+          : "画像を選択できませんでした。",
+      );
+      return;
+    }
+
+    setError(null);
+    clearStagedAvatar();
+    setStagedAvatarFile(file);
+    setStagedAvatarPreviewUrl(URL.createObjectURL(file));
+  }
+
+  function handleSaveProfile() {
+    if (savingProfile) return;
+    setError(null);
+    setSavingProfile(true);
+    void (async () => {
+      try {
+        let nextAvatarUrl = avatarUrl;
+        if (stagedAvatarFile) {
+          const compressed = await compressImage(stagedAvatarFile);
+          nextAvatarUrl = await uploadImageToCloudinary(
+            compressed,
+            stagedAvatarFile.name,
+            roomId,
+          );
+        }
+        const result = await updateGroupProfile(roomId, {
+          name: profileName,
+          avatarUrl: nextAvatarUrl,
+        });
+        if (!result.success) {
+          setError(result.error);
+          return;
+        }
+        const trimmed = profileName.trim();
+        onProfileChange({
+          roomName: trimmed.length > 0 ? trimmed : null,
+          avatarUrl: nextAvatarUrl,
+        });
+        clearStagedAvatar();
+      } catch (err) {
+        setError(
+          err instanceof ImageValidationError || err instanceof ImageUploadError
+            ? err.message
+            : NETWORK_ERROR_MESSAGE,
+        );
+      } finally {
+        setSavingProfile(false);
+      }
+    })();
+  }
+
+  const displayAvatarUrl = stagedAvatarPreviewUrl ?? avatarUrl;
+
   return (
     <div
       className="fixed inset-0 z-20 flex items-center justify-center bg-ink/40 backdrop-blur-sm"
@@ -283,6 +386,66 @@ export function GroupMembersPanel({
             ×
           </button>
         </div>
+
+        {isOwner && (
+          <div className="flex flex-col gap-2 border-b border-band/60 pb-3">
+            <p className="font-label text-[10px] uppercase tracking-wide text-ink-muted">
+              グループ設定
+            </p>
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-band/60 font-label text-sm text-ink-muted">
+                {displayAvatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- CloudinaryのURLをそのまま表示する。next/imageは不採用（docs/lessons.md参照）。
+                  <img
+                    src={displayAvatarUrl}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  (profileName.trim().slice(0, 1) ||
+                    members[0]?.displayName.slice(0, 1)) ||
+                  "G"
+                )}
+              </div>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => avatarFileInputRef.current?.click()}
+                  className="text-left text-xs text-tongue"
+                >
+                  画像を変更
+                </button>
+                <input
+                  ref={avatarFileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  onChange={handleAvatarFileChange}
+                  aria-label="グループのアバター画像を選択"
+                  className="hidden"
+                />
+              </div>
+            </div>
+            <input
+              type="text"
+              value={profileName}
+              onChange={(e) => setProfileName(e.target.value)}
+              placeholder="グループ名（未設定ならメンバー名で表示）"
+              aria-label="グループ名"
+              maxLength={GROUP_NAME_MAX_LENGTH}
+              className="w-full rounded-lg border border-band bg-surface px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+            />
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleSaveProfile}
+                disabled={savingProfile}
+                className="rounded-lg bg-tongue px-3 py-1.5 text-xs font-medium text-white transition-opacity disabled:opacity-60"
+              >
+                {savingProfile ? "保存中..." : "保存"}
+              </button>
+            </div>
+          </div>
+        )}
 
         <ul className="flex max-h-60 flex-col gap-1 overflow-y-auto">
           {members.map((member) => (

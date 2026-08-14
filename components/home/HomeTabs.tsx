@@ -33,6 +33,7 @@ export type ConversationItem =
       kind: "group";
       roomId: string;
       groupName: string | null;
+      avatarUrl: string | null;
       memberNames: string[];
       memberCount: number;
       lastMessagePreview: string | null;
@@ -168,9 +169,18 @@ function GroupConversationRow({ item }: { item: ConversationItem & { kind: "grou
       href={`/chat/${item.roomId}`}
       className="flex min-w-0 flex-1 items-center gap-2.5 px-4 py-2.5 transition-colors hover:bg-surface-raised"
     >
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-xs text-ink-muted">
-        {(item.groupName?.slice(0, 1) ?? item.memberNames[0]?.slice(0, 1)) ||
-          "G"}
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-band/60 font-label text-xs text-ink-muted">
+        {item.avatarUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- next/imageは不採用（docs/lessons.md参照）。
+          <img
+            src={item.avatarUrl}
+            alt=""
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          (item.groupName?.slice(0, 1) ?? item.memberNames[0]?.slice(0, 1)) ||
+          "G"
+        )}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">

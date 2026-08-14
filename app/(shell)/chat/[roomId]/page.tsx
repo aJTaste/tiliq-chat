@@ -29,7 +29,7 @@ export default async function ChatRoomPage({
   const [roomResult, myMembershipResult, settingsResult] = await Promise.all([
     supabase
       .from("rooms")
-      .select("id, is_group, is_temporary, name")
+      .select("id, is_group, is_temporary, name, avatar_url")
       .eq("id", roomId)
       .maybeSingle(),
     // FR-20「各チャット」スコープ：自分がこの部屋に鍵をかけているか
@@ -164,6 +164,7 @@ export default async function ChatRoomPage({
         peer={{
           kind: "group",
           roomName: room.name,
+          avatarUrl: room.avatar_url,
           members,
         }}
         initialMessages={initialMessages}

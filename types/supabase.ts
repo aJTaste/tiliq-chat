@@ -193,6 +193,7 @@ export type Database = {
       }
       rooms: {
         Row: {
+          avatar_url: string | null
           created_at: string
           expires_at: string | null
           id: string
@@ -203,6 +204,7 @@ export type Database = {
           name: string | null
         }
         Insert: {
+          avatar_url?: string | null
           created_at?: string
           expires_at?: string | null
           id?: string
@@ -213,6 +215,7 @@ export type Database = {
           name?: string | null
         }
         Update: {
+          avatar_url?: string | null
           created_at?: string
           expires_at?: string | null
           id?: string
@@ -372,6 +375,7 @@ export type Database = {
       get_group_conversation_list: {
         Args: never
         Returns: {
+          avatar_url: string
           last_message_at: string
           last_message_preview: string
           member_count: number

@@ -110,6 +110,7 @@ export function GatedShellBody({
         kind: "group" as const,
         roomId: row.room_id,
         groupName: row.name ?? null,
+        avatarUrl: row.avatar_url ?? null,
         memberNames: row.member_names ?? [],
         memberCount: row.member_count,
         lastMessagePreview: row.last_message_preview ?? null,

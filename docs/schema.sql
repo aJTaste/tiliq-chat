@@ -1660,3 +1660,82 @@ $$;
 revoke execute on function public.transfer_group_ownership(uuid, uuid) from public;
 grant execute on function public.transfer_group_ownership(uuid, uuid) to authenticated;
 revoke execute on function public.transfer_group_ownership(uuid, uuid) from anon;
+
+-- =============================================================================
+-- Phase 24: グループチャットM4（グループ名変更・アバター設定）
+-- 適用済み（Supabase MCP: apply_migration "phase24_group_profile_edit_m4"）。
+-- 名前・アバターの更新自体（app/actions/rooms.tsのupdateGroupProfile）は新規RPCを
+-- 経由せず、既存のrooms_update_ownerポリシー（is_room_owner(id)）に素のUPDATEで
+-- 乗せるだけで足りる（オーナー自身のroleを書き換えるtransfer_group_ownershipのような
+-- 自己参照的なchicken-and-egg問題が無いため）。ここではrooms.avatar_url列の追加と、
+-- 一覧表示にもアバターを出すためget_group_conversation_listの返り値拡張のみ行う。
+-- -----------------------------------------------------------------------------
+
+alter table public.rooms add column avatar_url text;
+
+-- get_group_conversation_list: 返り値にavatar_urlを追加。drop→create_or_replaceは
+-- 戻り値の型（列構成）が変わる場合に必須（create or replaceだけでは列追加できない）。
+-- docs/lessons.mdの教訓通り、drop→createは旧関数のACL（anon revoke含む）を引き継がない
+-- ため、以下でrevoke/grantをやり直している。
+drop function public.get_group_conversation_list();
+
+create or replace function public.get_group_conversation_list()
+returns table (
+  room_id uuid,
+  name text,
+  avatar_url text,
+  member_count integer,
+  member_names text[],
+  last_message_preview text,
+  last_message_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  with my_rooms as (
+    select rm.room_id
+    from public.room_members rm
+    join public.rooms r on r.id = rm.room_id
+    where rm.user_id = auth.uid() and r.is_group = true
+  ),
+  member_counts as (
+    select rm.room_id, count(*) as member_count
+    from public.room_members rm
+    where rm.room_id in (select room_id from my_rooms)
+    group by rm.room_id
+  ),
+  member_names as (
+    select rm.room_id, array_agg(p.display_name order by rm.joined_at) as names
+    from public.room_members rm
+    join public.profiles p on p.id = rm.user_id
+    where rm.room_id in (select room_id from my_rooms)
+      and rm.user_id <> auth.uid()
+    group by rm.room_id
+  ),
+  last_msg as (
+    select distinct on (m.room_id) m.room_id, m.content, m.image_url, m.created_at
+    from public.messages m
+    where m.room_id in (select room_id from my_rooms) and m.deleted_at is null
+    order by m.room_id, m.created_at desc
+  )
+  select
+    mr.room_id,
+    ro.name,
+    ro.avatar_url,
+    mc.member_count,
+    coalesce(mn.names, array[]::text[]) as member_names,
+    coalesce(lm.content, case when lm.image_url is not null then '📷 画像' else null end) as last_message_preview,
+    lm.created_at as last_message_at
+  from my_rooms mr
+  join public.rooms ro on ro.id = mr.room_id
+  join member_counts mc on mc.room_id = mr.room_id
+  left join member_names mn on mn.room_id = mr.room_id
+  left join last_msg lm on lm.room_id = mr.room_id
+  order by lm.created_at desc nulls last
+$$;
+
+revoke execute on function public.get_group_conversation_list() from public;
+grant execute on function public.get_group_conversation_list() to authenticated;
+revoke execute on function public.get_group_conversation_list() from anon;

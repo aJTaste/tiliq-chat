@@ -61,7 +61,11 @@ export function GatedChatRoomLoader({
       const roleById = new Map(memberRows.map((row) => [row.user_id, row.role]));
 
       const [{ data: room }, { data: memberProfiles }] = await Promise.all([
-        supabase.from("rooms").select("name").eq("id", roomId).single(),
+        supabase
+          .from("rooms")
+          .select("name, avatar_url")
+          .eq("id", roomId)
+          .single(),
         supabase
           .from("profiles")
           .select("id, display_name")
@@ -111,6 +115,7 @@ export function GatedChatRoomLoader({
           peer: {
             kind: "group",
             roomName: room?.name ?? null,
+            avatarUrl: room?.avatar_url ?? null,
             members,
           },
           initialMessages,
