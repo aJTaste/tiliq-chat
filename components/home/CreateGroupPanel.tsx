@@ -5,6 +5,7 @@ import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { createGroupRoom } from "@/app/actions/rooms";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
+import { Modal } from "@/components/ui/Modal";
 
 type SearchResult = {
   userId: string;
@@ -22,6 +23,11 @@ const GROUP_NAME_MAX_LENGTH = 50;
  * フレンド状態バッジ等は表示しない簡素な構成にしている（M1のスコープ判断）。
  * 成功時はcreateGroupRoomがredirect()するため、onCreatedコールバックは持たず、
  * キャンセル（作成せず閉じる）時のみonCloseを呼ぶ。
+ *
+ * サイドバーUI再設計：サイドバー「＋」新規作成メニューから開くモーダルに変更した
+ * （旧実装ではHomeTabs.tsxのグループタブ内にインラインカードとして展開していた）。
+ * components/ui/Modal.tsxでラップし、GroupMembersPanel.tsxと同じ見た目のタイトル行
+ * ＋「×」ボタンを追加した。
  */
 export function CreateGroupPanel({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
@@ -112,99 +118,118 @@ export function CreateGroupPanel({ onClose }: { onClose: () => void }) {
   const selectedList = Array.from(selected.values());
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-band bg-surface-raised p-3">
-      <input
-        type="text"
-        value={groupName}
-        onChange={(e) => setGroupName(e.target.value)}
-        placeholder="グループ名（任意）"
-        aria-label="グループ名"
-        maxLength={GROUP_NAME_MAX_LENGTH}
-        className="w-full rounded-lg border border-band bg-surface px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
-      />
-
-      {selectedList.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {selectedList.map((user) => (
-            <button
-              key={user.userId}
-              type="button"
-              onClick={() => toggleSelected(user)}
-              className="flex items-center gap-1 rounded-full border border-tongue/60 bg-tongue/10 px-2 py-1 font-label text-[10px] text-tongue"
-            >
-              {user.displayName}
-              <span aria-hidden="true">×</span>
-            </button>
-          ))}
+    <Modal onClose={onClose} labelledBy="create-group-title">
+      <div className="flex flex-col gap-3 rounded-lg border border-band bg-surface-raised p-4">
+        <div className="flex items-center justify-between">
+          <p
+            id="create-group-title"
+            className="font-display text-sm font-semibold text-ink"
+          >
+            グループを作成
+          </p>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="閉じる"
+            className="text-ink-muted transition-colors hover:text-ink"
+          >
+            ×
+          </button>
         </div>
-      )}
 
-      <input
-        type="text"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="ユーザーIDで検索して追加"
-        aria-label="グループに追加するユーザーを検索"
-        className="w-full rounded-lg border border-band bg-surface px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
-      />
+        <input
+          type="text"
+          value={groupName}
+          onChange={(e) => setGroupName(e.target.value)}
+          placeholder="グループ名（任意）"
+          aria-label="グループ名"
+          maxLength={GROUP_NAME_MAX_LENGTH}
+          className="w-full rounded-lg border border-band bg-surface px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+        />
 
-      {searching && (
-        <p className="text-xs text-ink-muted">検索中...</p>
-      )}
+        {selectedList.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {selectedList.map((user) => (
+              <button
+                key={user.userId}
+                type="button"
+                onClick={() => toggleSelected(user)}
+                className="flex items-center gap-1 rounded-full border border-tongue/60 bg-tongue/10 px-2 py-1 font-label text-[10px] text-tongue"
+              >
+                {user.displayName}
+                <span aria-hidden="true">×</span>
+              </button>
+            ))}
+          </div>
+        )}
 
-      {!searching && query.trim().length > 0 && results.length === 0 && (
-        <p className="text-xs text-ink-muted">
-          ユーザーが見つかりませんでした。
-        </p>
-      )}
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="ユーザーIDで検索して追加"
+          aria-label="グループに追加するユーザーを検索"
+          className="w-full rounded-lg border border-band bg-surface px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+        />
 
-      {results.length > 0 && (
-        <ul className="flex max-h-40 flex-col gap-1 overflow-y-auto">
-          {results.map((user) => (
-            <li key={user.userId}>
-              <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-ink transition-colors hover:bg-surface">
-                <input
-                  type="checkbox"
-                  checked={selected.has(user.userId)}
-                  onChange={() => toggleSelected(user)}
-                  className="shrink-0"
-                />
-                <span className="min-w-0 truncate">
-                  {user.displayName}
-                  <span className="ml-1 text-xs text-ink-muted">
-                    @{user.username}
+        {searching && (
+          <p className="text-xs text-ink-muted">検索中...</p>
+        )}
+
+        {!searching && query.trim().length > 0 && results.length === 0 && (
+          <p className="text-xs text-ink-muted">
+            ユーザーが見つかりませんでした。
+          </p>
+        )}
+
+        {results.length > 0 && (
+          <ul className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+            {results.map((user) => (
+              <li key={user.userId}>
+                <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-ink transition-colors hover:bg-surface">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(user.userId)}
+                    onChange={() => toggleSelected(user)}
+                    className="shrink-0"
+                  />
+                  <span className="min-w-0 truncate">
+                    {user.displayName}
+                    <span className="ml-1 text-xs text-ink-muted">
+                      @{user.username}
+                    </span>
                   </span>
-                </span>
-              </label>
-            </li>
-          ))}
-        </ul>
-      )}
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
 
-      {error && (
-        <p className="text-xs text-clay" role="alert">
-          {error}
-        </p>
-      )}
+        {error && (
+          <p className="text-xs text-clay" role="alert">
+            {error}
+          </p>
+        )}
 
-      <div className="flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={pending}
-          className="rounded-lg px-3 py-1.5 text-xs text-ink-muted transition-colors hover:bg-surface disabled:opacity-60"
-        >
-          キャンセル
-        </button>
-        <button
-          type="button"
-          onClick={handleCreate}
-          disabled={selected.size < 2 || pending}
-          className="rounded-lg bg-tongue px-3 py-1.5 text-xs font-medium text-white transition-opacity disabled:opacity-60"
-        >
-          {pending ? "作成中..." : "グループを作成"}
-        </button>
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={pending}
+            className="rounded-lg px-3 py-1.5 text-xs text-ink-muted transition-colors hover:bg-surface disabled:opacity-60"
+          >
+            キャンセル
+          </button>
+          <button
+            type="button"
+            onClick={handleCreate}
+            disabled={selected.size < 2 || pending}
+            className="rounded-lg bg-tongue px-3 py-1.5 text-xs font-medium text-white transition-opacity disabled:opacity-60"
+          >
+            {pending ? "作成中..." : "グループを作成"}
+          </button>
+        </div>
       </div>
-    </div>
+    </Modal>
   );
 }

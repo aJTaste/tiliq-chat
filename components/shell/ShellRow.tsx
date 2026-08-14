@@ -27,7 +27,7 @@ export function ShellRow({
   return (
     <div className="flex min-h-0 flex-1 flex-col md:flex-row">
       <div
-        className={`${showSidebar ? "flex" : "hidden"} min-h-0 w-full flex-col md:flex md:w-[32rem] md:shrink-0 md:flex-row md:border-r md:border-band/60`}
+        className={`${showSidebar ? "flex" : "hidden"} min-h-0 w-full flex-col md:flex md:w-80 md:shrink-0 md:border-r md:border-band/60`}
       >
         {sidebar}
       </div>

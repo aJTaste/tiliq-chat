@@ -2,8 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import type { BlockedUserItem, FriendRequestItem } from "@/components/home/AddUserPanel";
 import type { ConversationItem, FriendshipStatus } from "@/components/home/HomeTabs";
-import { AddUserPanel } from "@/components/home/AddUserPanel";
-import { HomeTabs } from "@/components/home/HomeTabs";
+import { SidebarNav } from "@/components/home/SidebarNav";
 import { HomeHeader } from "@/components/home/HomeHeader";
 import { AuthGate } from "@/components/auth/AuthGate";
 import { GatedShellBody } from "@/components/shell/GatedShellBody";
@@ -16,10 +15,10 @@ import { ShellFriendshipsSync } from "@/components/shell/ShellFriendshipsSync";
  * （サイドバーの状態が保持される）ことを利用する。Route Group自体はURLに
  * 現れないため、proxy.tsのmatcher（pathnameベース）には影響しない。
  *
- * サイドバー（AddUserPanel+HomeTabs）のデータ取得責務は、旧app/home/page.tsx
- * からこのファイルへ移した。ゲート有効時のデータ取得・描画は
- * components/shell/GatedShellBody.tsxに委譲する（旧HomeContent.tsxの
- * GatedHomeBody相当）。
+ * サイドバー（SidebarNav＝AddUserPanel+HomeTabsを合成したもの。サイドバーUI
+ * 再設計で導入）のデータ取得責務は、旧app/home/page.tsxからこのファイルへ移した。
+ * ゲート有効時のデータ取得・描画はcomponents/shell/GatedShellBody.tsxに委譲する
+ * （旧HomeContent.tsxのGatedHomeBody相当）。
  */
 export default async function ShellLayout({
   children,
@@ -157,16 +156,12 @@ export default async function ShellLayout({
       <ShellFriendshipsSync userId={user.id} />
       <ShellRow
         sidebar={
-          <>
-            <AddUserPanel
-              initialRequests={friendRequests}
-              initialBlockedUsers={blockedUsers}
-            />
-            <HomeTabs
-              conversations={[...conversations, ...groupConversations]}
-              loadError={loadError}
-            />
-          </>
+          <SidebarNav
+            initialRequests={friendRequests}
+            initialBlockedUsers={blockedUsers}
+            conversations={[...conversations, ...groupConversations]}
+            loadError={loadError}
+          />
         }
       >
         {children}

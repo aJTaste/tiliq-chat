@@ -4,15 +4,14 @@ import { type ReactNode, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { HomeHeader } from "@/components/home/HomeHeader";
 import { ShellRow } from "@/components/shell/ShellRow";
-import {
-  AddUserPanel,
-  type BlockedUserItem,
-  type FriendRequestItem,
+import { SidebarNav } from "@/components/home/SidebarNav";
+import type {
+  BlockedUserItem,
+  FriendRequestItem,
 } from "@/components/home/AddUserPanel";
-import {
-  HomeTabs,
-  type ConversationItem,
-  type FriendshipStatus,
+import type {
+  ConversationItem,
+  FriendshipStatus,
 } from "@/components/home/HomeTabs";
 
 type ShellData = {
@@ -196,16 +195,12 @@ export function GatedShellBody({
       <HomeHeader displayName={data.displayName} />
       <ShellRow
         sidebar={
-          <>
-            <AddUserPanel
-              initialRequests={data.friendRequests}
-              initialBlockedUsers={data.blockedUsers}
-            />
-            <HomeTabs
-              conversations={data.conversations}
-              loadError={data.loadError}
-            />
-          </>
+          <SidebarNav
+            initialRequests={data.friendRequests}
+            initialBlockedUsers={data.blockedUsers}
+            conversations={data.conversations}
+            loadError={data.loadError}
+          />
         }
       >
         {children}

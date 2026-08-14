@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { removeFriend } from "@/app/actions/friends";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
-import { CreateGroupPanel } from "./CreateGroupPanel";
 
 export type FriendshipStatus =
   | "accepted"
@@ -50,6 +49,18 @@ function isGroupConversation(
   item: ConversationItem,
 ): item is Extract<ConversationItem, { kind: "group" }> {
   return item.kind === "group";
+}
+
+// サイドバーUI再設計：「すべて」タブ用に、DM・グループを直近メッセージ順で統合
+// ソートする。両バリアントとも`lastMessageAt`を持つ判別共用体のため型的な障害は
+// 無い。まだメッセージが無い会話（null）は最下部に送る。
+function byLastMessageDesc(a: ConversationItem, b: ConversationItem): number {
+  if (!a.lastMessageAt && !b.lastMessageAt) return 0;
+  if (!a.lastMessageAt) return 1;
+  if (!b.lastMessageAt) return -1;
+  return (
+    new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
+  );
 }
 
 const FRIENDSHIP_BADGE: Partial<Record<FriendshipStatus, string>> = {
@@ -189,7 +200,7 @@ function GroupConversationRow({ item }: { item: ConversationItem & { kind: "grou
   );
 }
 
-type TabKey = "friends" | "strangers" | "group";
+type TabKey = "all" | "friends" | "strangers" | "group";
 
 function TabButton({
   label,
@@ -225,17 +236,19 @@ function TabButton({
 }
 
 /**
- * ホーム画面の「フレンド／ストレンジャー／グループ」タブ（SRS 3.2.1）。
- * 「検索」タブはAddUserPanelがユーザー追加パネルとして兼ねているため統合。
+ * サイドバー「一覧」タブの中身（SRS 3.2.1）。「すべて／フレンド／ストレンジャー／
+ * グループ」の4サブタブを持つ。「すべて」は全種別を直近メッセージ順に統合した
+ * ビューで、フレンド/ストレンジャー/グループは従来通りの絞り込み表示（サイドバー
+ * UI再設計で追加。旧実装は「すべて」ビューを持たず3タブが完全に独立していた）。
+ * グループ作成の導線（旧：グループタブ内のインライン展開）はサイドバー「＋」メニュー
+ * （components/home/SidebarNav.tsx）に移管したため、このコンポーネントは
+ * CreateGroupPanel.tsxを知らない。
  *
  * Phase 8: `app/actions/friends.ts`のremoveFriendはPhase 5から実装済みだったが
  * 呼び出すUIが無かったため、フレンド行に「解除」ボタンを追加した。一覧の更新は
  * AddUserPanel.tsxの他のハンドラと同じくrouter.refresh()で行う（このコンポーネント
  * 自身はconversationsをローカルstateへ複製せず、親から渡されたpropsをそのまま使う設計の
  * ため）。
- *
- * Phase 19: グループチャットUI M1。グループタブを有効化し、検索欄の代わりに
- * 「＋ グループを作成」ボタン→CreateGroupPanelの開閉を配置する。
  */
 export function HomeTabs({
   conversations,
@@ -244,11 +257,10 @@ export function HomeTabs({
   conversations: ConversationItem[];
   loadError?: boolean;
 }) {
-  const [tab, setTab] = useState<TabKey>("friends");
+  const [tab, setTab] = useState<TabKey>("all");
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [createGroupOpen, setCreateGroupOpen] = useState(false);
   const router = useRouter();
 
   const dmConversations = conversations.filter(isDmConversation);
@@ -262,10 +274,17 @@ export function HomeTabs({
   );
 
   const items: ConversationItem[] =
-    tab === "friends" ? friends : tab === "strangers" ? strangers : groupConversations;
+    tab === "all"
+      ? [...conversations].sort(byLastMessageDesc)
+      : tab === "friends"
+        ? friends
+        : tab === "strangers"
+          ? strangers
+          : groupConversations;
 
-  // FR-14: フレンド・ストレンジャー一覧内の検索（AddUserPanel.tsxの新規ユーザー追加検索＝
-  // FR-15とは別物）。グループタブでは検索欄自体を表示しないため対象外。
+  // FR-14: フレンド・ストレンジャー・グループ一覧内の検索（AddUserPanel.tsxの
+  // 新規ユーザー追加検索＝FR-15とは別物）。統合ビューでも一貫性を保つため、
+  // グループも名前・メンバー名で検索対象に含める。
   const normalizedQuery = query.trim().toLowerCase();
   const filteredItems =
     normalizedQuery.length === 0
@@ -274,7 +293,11 @@ export function HomeTabs({
           isDmConversation(item)
             ? item.otherDisplayName.toLowerCase().includes(normalizedQuery) ||
               item.otherUsername.toLowerCase().includes(normalizedQuery)
-            : false,
+            : (item.groupName?.toLowerCase().includes(normalizedQuery) ??
+                false) ||
+              item.memberNames.some((name) =>
+                name.toLowerCase().includes(normalizedQuery),
+              ),
         );
 
   function handleRemoveFriend(userId: string, displayName: string) {
@@ -300,8 +323,14 @@ export function HomeTabs({
   }
 
   return (
-    <div className="flex flex-1 flex-col md:min-w-0">
+    <div className="flex flex-1 flex-col">
       <div className="flex border-b border-band/60 px-2">
+        <TabButton
+          label="すべて"
+          count={conversations.length}
+          active={tab === "all"}
+          onClick={() => setTab("all")}
+        />
         <TabButton
           label="フレンド"
           count={friends.length}
@@ -322,33 +351,16 @@ export function HomeTabs({
         />
       </div>
 
-      {!loadError && tab !== "group" && (
+      {!loadError && (
         <div className="px-6 py-2">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="フレンド・ストレンジャーを検索"
-            aria-label="フレンド・ストレンジャーを検索"
+            placeholder="会話を検索"
+            aria-label="会話を検索"
             className="w-full rounded-lg border border-band bg-surface-raised px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
           />
-        </div>
-      )}
-
-      {!loadError && tab === "group" && (
-        <div className="px-6 py-2">
-          <button
-            type="button"
-            onClick={() => setCreateGroupOpen((prev) => !prev)}
-            className="w-full rounded-lg border border-band px-3 py-2 text-sm text-ink-muted transition-colors hover:bg-surface-raised"
-          >
-            {createGroupOpen ? "閉じる" : "＋ グループを作成"}
-          </button>
-          {createGroupOpen && (
-            <div className="mt-2">
-              <CreateGroupPanel onClose={() => setCreateGroupOpen(false)} />
-            </div>
-          )}
         </div>
       )}
 
@@ -358,18 +370,20 @@ export function HomeTabs({
         </p>
       )}
 
-      <div className="flex-1 overflow-y-auto pb-14 md:pb-0">
+      <div className="flex-1 overflow-y-auto">
         {loadError ? (
           <p className="px-6 py-8 text-center text-sm text-clay" role="alert">
             読み込みに失敗しました。再読み込みしてください。
           </p>
         ) : items.length === 0 ? (
           <p className="px-6 py-8 text-center text-sm text-ink-muted">
-            {tab === "friends"
-              ? "まだフレンドとの会話がありません。"
-              : tab === "strangers"
-                ? "まだストレンジャーとの会話がありません。"
-                : "まだグループチャットがありません。"}
+            {tab === "all"
+              ? "まだ会話がありません。"
+              : tab === "friends"
+                ? "まだフレンドとの会話がありません。"
+                : tab === "strangers"
+                  ? "まだストレンジャーとの会話がありません。"
+                  : "まだグループチャットがありません。"}
           </p>
         ) : filteredItems.length === 0 ? (
           <p className="px-6 py-8 text-center text-sm text-ink-muted">

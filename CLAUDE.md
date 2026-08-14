@@ -1208,7 +1208,56 @@ M3のスコープ：オーナーが別の既存メンバーへオーナー権を
 ### 未対応・持ち越し事項（Phase 22時点）
 
 - グループ名の変更・アバター設定等、グループのプロフィール編集機能は引き続き未実装（M1〜M3のいずれのスコープにも含まれていない）
-- サイドバー内部UI再設計・小粒課題群は引き続き別のバックログ項目のまま（ユーザーの好みの確認待ち）
+- サイドバー内部UI再設計・小粒課題群は引き続き別のバックログ項目のまま（ユーザーの好みの確認待ち）→ **サイドバー内部UI再設計はPhase 23で対応**
+
+## Phase 23 の実装内容・詳細
+
+CLAUDE.md「次にやること」候補4（サイドバー内部UIの再設計）に着手。Phase 16でユーザーから出ていた当初構想（「ユーザー検索」「チャット一覧（統合＋種別絞り込み）」の2画面切替＋「＋」新規作成メニュー、種別切替はタブ型で）に沿って、Phase 17で骨組みのみ実装していたサイドバー内部（`AddUserPanel.tsx`・`HomeTabs.tsx`・`CreateGroupPanel.tsx`）を再設計した。実装前にExplore→AskUserQuestion→Planエージェントの計画フローを経て、ユーザーに4つの分岐点（切替UIの見た目・PC幅の挙動・一覧の統合要否・＋メニューの範囲）を確認してから着手した。
+
+### ユーザーが確定した設計方針
+
+1. サイドバー最上部に「検索」「一覧」の2タブを配置し、クリックで排他的に表示を切り替える
+2. PCも含め常に排他表示（Phase 13の「AddUserPanel PC常時展開」は撤回）
+3. フレンド/ストレンジャー/グループを直近メッセージ順に統合した「すべて」ビューを基本とし、フレンド/ストレンジャー/グループの絞り込みタブも維持する
+4. グループ作成・一時チャット作成の両方を「＋」アイコンのメニューに集約する。通常のDM開始・フレンド申請は引き続き「検索」タブから行う
+
+### 追加ファイル
+
+- `components/ui/Modal.tsx` — 汎用モーダルラッパー（背景クリック・Escapeキーで`onClose`、`role="dialog"` `aria-modal`）。既存の`GroupMembersPanel.tsx`が持つ`fixed inset-0 z-20 flex items-center justify-center bg-ink/40 backdrop-blur-sm`パターンを踏襲。中身のパディング・タイトルは持たせず子コンポーネント側の裁量に残す設計。**新規2箇所（`CreateGroupPanel.tsx`・`CreateTempChatPanel.tsx`）にのみ適用し、既存の`GroupMembersPanel.tsx`自体は追従させていない**（無関係な既存ファイルへの染み出しを避けるため、今回のスコープ外とした）
+- `components/home/CreateTempChatPanel.tsx` — サイドバー「＋」メニューから開く一時チャット作成モーダル。旧`AddUserPanel.tsx`の検索結果行に埋め込まれていた有効期限セレクター（`DURATION_OPTIONS`等）をここに移設し、`CreateGroupPanel.tsx`と同じ`search_users`デバウンス検索パターンに載せ替えた。グループ作成と異なり単一選択（`Map`ではなく`selected: SearchResult | null`）。既にDMルームがある相手は`create_temp_dm_room`が既存ルーム検索をしない仕様のため選択不可にする（旧`AddUserPanel.tsx`の`!r.existingRoomId`ガードを踏襲）
+
+### 変更ファイル
+
+- `components/home/SidebarNav.tsx`（新規） — サイドバー全体の合成コンポーネント。「検索」「一覧」タブバー＋未読フレンド申請バッジ＋「＋」ドロップダウン（`ChatRoomOptionsMenu.tsx`と同じ`wrapperRef`+`mousedown`外側クリック検知パターン）＋選択中ビュー（`AddUserPanel`または`HomeTabs`）を1つにまとめる。`app/(shell)/layout.tsx`と`components/shell/GatedShellBody.tsx`の2箇所で重複していた`<AddUserPanel/><HomeTabs/>`組み立てJSXをここに集約した副産物もある
+- `components/home/AddUserPanel.tsx` — 開閉chrome（`open` state・モバイル固定ボトムバー・PC常時展開用の固定幅スタイル・トグルボタン）を全削除し、親（`SidebarNav`）から表示/非表示を制御される単純な内容物に縮小。有効期限セレクター関連を`CreateTempChatPanel.tsx`へ移設したため、「メッセージ」ボタンは常に`startDirectMessageWithUser`のみを呼ぶ単純な形になった。未読バッジの表示・既読化トリガーも`SidebarNav.tsx`へ移管
+- `components/home/HomeTabs.tsx` — `TabKey`に`"all"`を追加してデフォルト化。「すべて」選択時はDM・グループを`lastMessageAt`降順（nullは最下部）で統合ソートして表示する。「＋グループを作成」ボタン＋`CreateGroupPanel`のインライン展開ブロックを削除（サイドバー「＋」メニューに移管したため`CreateGroupPanel`への依存自体が無くなった）。FR-14検索欄を全タブで常時表示にし、フィルタ述語もグループ（`groupName`/`memberNames`）を対象に含めるよう拡張した
+- `components/home/CreateGroupPanel.tsx` — ルート要素を新設`Modal`でラップし、`GroupMembersPanel.tsx`と統一した見た目のタイトル行＋「×」ボタンを追加。呼び出され方が「`HomeTabs.tsx`のグループタブ内にインライン展開」から「サイドバー『＋』メニューから開くモーダル」に変わった
+- `components/shell/ShellRow.tsx` — サイドバーラッパーの幅を`md:w-[32rem]`→`md:w-80`（暫定値、実機確認後に再調整前提）に縮小し、`md:flex-row`を削除。以前はAddUserPanel+HomeTabsの2カラム横並び用の指定だったが、今回からサイドバーは`SidebarNav`単体（内部で検索/一覧を排他表示）になったため不要になった
+- `app/(shell)/layout.tsx` / `components/shell/GatedShellBody.tsx` — `<AddUserPanel/><HomeTabs/>`のフラグメントを`<SidebarNav .../>`呼び出し1つに置換。データ取得（`Promise.all`）自体は無変更
+
+### 設計判断・学び
+
+- **「＋」メニューから開くモーダルの自動クローズが必須の対策だった。** `createGroupRoom`/`startTemporaryDirectMessage`は成功時にServer Action内で`redirect()`する既存の設計（変更不可）だが、これらを呼ぶ`CreateGroupPanel`/`CreateTempChatPanel`は永続サイドバーシェルの一部（`SidebarNav`、`app/(shell)/layout.tsx`配下）にマウントされる。Phase 17の設計通りこの階層はナビゲーションで再マウントされないため、何もしないと「グループ作成→新しいチャット画面に遷移したのにモーダルが画面に残る」という不具合になるところだった（`GroupMembersPanel.tsx`が同じ問題を起こさないのは、`template.tsx`によりroomId変更ごとに強制リマウントされる非永続領域＝`{children}`側にあるため）。対策として`SidebarNav.tsx`で`usePathname()`（URL由来でハイドレーション不一致の心配がない、`ShellRow.tsx`の`useSelectedLayoutSegment()`と同種の方針）を監視し、変化したら`activeModal`のみをリセットするようにした（「検索」/「一覧」タブの選択状態はナビゲーションをまたいで保持してよいためリセット対象に含めない）
+- **未読フレンド申請バッジの自動既読化トリガーを`open`（旧AddUserPanel.tsx自身の開閉状態）から`activeView === "search"`（SidebarNav側）に移したことで、Phase 13の既知の制約「PCでは未読バッジが自動で消えない」が副産物的に解消された。** 旧実装はPCで`open`が常にfalseのまま変化しなかったため既読化effectが発火せず、ヘッダーのトグルボタンをこの副作用を手動発火させるためだけに残す非対称設計になっていた。今回はPC・モバイル問わず「検索」タブに切り替えた瞬間に一貫して発火する
+- **モーダルの共通化はrule of threeを満たすが、既存の`GroupMembersPanel.tsx`自体への追従は見送った。** 新設2箇所（`CreateGroupPanel`・`CreateTempChatPanel`）だけを対象にすることで、今回のタスク（サイドバー再設計）と無関係な既存ファイルへの差分・回帰リスクを広げないようにした（`GroupMembersPanel.tsx`のModal化は任意の低優先度クリーンアップとして残す）
+- **FR-14検索欄をグループタブでも表示する変更に伴い、フィルタ述語の拡張が必須だった。** 表示条件だけを緩めてフィルタ述語（DM専用の判定のみ）を直さないと、グループタブで検索欄が見えるのに何も効かない壊れたUIになるため、`groupName`/`memberNames`の部分一致もあわせて追加した
+- **サイドバー幅`md:w-[32rem]`（旧：AddUserPanel固定18rem＋HomeTabs残り約14remの2カラム横並び用）を`md:w-80`（20rem/320px）に縮小した。** 単一ビュー表示になったため2カラム前提の幅は過大と判断したが、Phase 17の記録と同様この値も実機確認後の再調整を前提とした暫定値として扱う
+- **Planエージェントによる設計提案を、実ファイル（`AddUserPanel.tsx`・`CreateGroupPanel.tsx`・`ShellRow.tsx`・`app/(shell)/layout.tsx`・`GatedShellBody.tsx`）の直接確認で検証してから実装に入った。** 行番号・クラス名の記述はすべて実コードと一致しており、特に上記「＋メニューモーダルの自動クローズ」の論点は実装前の設計段階で発見できたため、手戻りなく実装できた
+
+### 検証方法・実施内容
+
+- `npx tsc --noEmit`（エラー0件）
+- `npx eslint .`（`SidebarNav.tsx`の`usePathname()`監視effectで`react-hooks/set-state-in-effect`が1件検出されたため、既存踏襲パターン通り`eslint-disable-next-line`を追加して解消。最終的にエラー0件）
+- `rm -rf .next && npm run build`（クリーンビルド成功）
+- DB層の変更は無し（既存の`search_users`／`startDirectMessageWithUser`／`startTemporaryDirectMessage`／`createGroupRoom`／`markFriendRequestsRead`等をシグネチャ・戻り値とも変えずに呼び出し元だけ再配線したため、`execute_sql`等でのDB検証・`types/supabase.ts`再生成は不要と判断し実施していない）
+- 実機での一連のQA（検索/一覧タブの排他切替、統合「すべて」ビューのソート、＋メニューからのグループ/一時チャット作成とモーダル自動クローズ、起動時ゲート有効時の`GatedShellBody`経路含む）はユーザーによる実機確認待ち
+
+### 未対応・持ち越し事項（Phase 23時点）
+
+- `docs/srs.md` 3.2.1節に残る「独立した検索タブとしては実装せず」という注記（Phase 5→Phase 15で確定した記述）が、今回の変更で実態と乖離した（今回まさに独立した「検索」タブを新設したため）。別セッションでの整合作業を推奨（Phase 15と同種の対応）
+- `GroupMembersPanel.tsx`を新設`components/ui/Modal.tsx`へ追従させる作業（任意の低優先度クリーンアップ）
+- サイドバー幅`md:w-80`は暫定値、実機確認後の再調整余地あり
+- モバイルでチャット画面から一覧へ戻るUIが無い問題（Phase 16由来、既存バックログ）は今回もスコープ外のまま
 
 ## 検討中のアイデア・未確定のPhase割り当て
 
@@ -1260,7 +1309,7 @@ Phase 16で、グループチャットUI M1の設置場所をユーザーに確�
 
 **次回セッションでの進め方（案）：** まず本セクションの方向性（案1/案2、実装するかどうか）をユーザーと確定し、Explore/Planエージェントでルートグループ化の詳細設計を行ってから、グループチャットUIのM1着手を再検討する。
 
-**実装状況（Phase 17で更新）：** 上記の方向性確認・実物ドキュメントでの裏取り・詳細設計・実装（M1・骨組み）まで完了した。採用したのは案2寄りの構成（Route Groups + 共有Layout。`<Link>`遷移でレイアウトが再マウントされないことを利用し、URLも`/chat/[roomId]`のまま変わる、案1・案2の両方が同時に満たされる形）。詳細は「Phase 17 の実装内容・詳細」参照。サイドバー内部UI（「検索⇄一覧」トグル、「＋」新規作成メニュー）の再設計は引き続き未着手・スコープ外のまま。実機での最終確認待ち。
+**実装状況（Phase 17で更新）：** 上記の方向性確認・実物ドキュメントでの裏取り・詳細設計・実装（M1・骨組み）まで完了した。採用したのは案2寄りの構成（Route Groups + 共有Layout。`<Link>`遷移でレイアウトが再マウントされないことを利用し、URLも`/chat/[roomId]`のまま変わる、案1・案2の両方が同時に満たされる形）。詳細は「Phase 17 の実装内容・詳細」参照。**サイドバー内部UI（「検索⇄一覧」トグル、「＋」新規作成メニュー）の再設計はPhase 23で実装済み。** 詳細は「Phase 23 の実装内容・詳細」参照。実機での最終確認待ち。
 
 ### 4. 実機フィードバックで見つかった追加の要望・小粒課題（Phase 16時点）
 
@@ -1296,7 +1345,7 @@ Phase 17実装後の実機確認で、チャット切り替え時に約0.7秒の
 - **コミット：** Conventional Commits形式でコミットする
 - **破壊的変更の確認：** Next.js等のバージョン依存の仕様に不安がある場合、AGENTS.mdの指示通り実物のドキュメント（npmパッケージから取得可能）またはWeb検索で確認してからコードを書く
 
-## ファイル構成（Phase 22時点）
+## ファイル構成（Phase 23時点）
 
 ```
 tiliq-chat/
@@ -1315,7 +1364,7 @@ tiliq-chat/
 │   ├── signup/page.tsx          # サインアップ画面（Phase 2）
 │   ├── settings/page.tsx        # 追加認証・通知・DM受信設定画面（Phase 6。Phase 7で通知設定・DM受信設定を統合。永続サイドバーシェルには含まれない独立ページ）
 │   ├── (shell)/                 # 永続サイドバーシェル（Phase 17・新規Route Group。URLには現れない）
-│   │   ├── layout.tsx           # サイドバー（AddUserPanel+HomeTabs）のデータ取得・起動時ゲート判定。`/home`・`/chat/[roomId]`間のクライアント遷移で再マウントされない（Phase 19でget_group_conversation_listを統合）
+│   │   ├── layout.tsx           # サイドバー（SidebarNav）のデータ取得・起動時ゲート判定。`/home`・`/chat/[roomId]`間のクライアント遷移で再マウントされない（Phase 19でget_group_conversation_listを統合、Phase 23でAddUserPanel+HomeTabsの組み立てをSidebarNav呼び出しに置換）
 │   │   ├── home/page.tsx        # チャット未選択時のメインエリアのプレースホルダ（Phase 3〜16の実装はlayout.tsx/components/shell/へ移設済み。旧app/home/page.tsxから移動）
 │   │   └── chat/[roomId]/
 │   │       ├── page.tsx         # チャット画面（Phase 3。Phase 5でブロック状態取得、Phase 6で各チャットゲート分岐・非表示ID取得、Phase 17で起動時ゲートの独立チェックを追加＝直接URLバイパスの解消、Phase 18でDB問い合わせをPromise.allで並列化（4段階に圧縮）、Phase 19でroom.is_groupによるグループ/DM分岐を追加、Phase 21でグループ分岐にroleを追加。旧app/chat/[roomId]/page.tsxから移動）
@@ -1352,9 +1401,11 @@ tiliq-chat/
 │   │   ├── ServiceWorkerRegistrar.tsx  # Service Worker登録（何も描画しない）
 │   │   ├── OfflineBanner.tsx           # SRS 3.4オフラインバナー
 │   │   └── InstallPrompt.tsx           # PWAインストール導線（beforeinstallprompt+iOSフォールバック）
+│   ├── ui/                      # Phase 23・新規ディレクトリ
+│   │   └── Modal.tsx            # 汎用モーダルラッパー（背景クリック・Escapeでonclose、role="dialog"）。CreateGroupPanel.tsx・CreateTempChatPanel.tsxが使用。既存のGroupMembersPanel.tsxは追従させていない
 │   ├── shell/                   # Phase 17・新規ディレクトリ（永続サイドバーシェル本体）
-│   │   ├── ShellRow.tsx         # サイドバー/メインのmd:分割。useSelectedLayoutSegmentでモバイル幅の表示切替を判定
-│   │   ├── GatedShellBody.tsx   # 起動時ゲート有効時のクライアント側取得＋描画（旧components/home/HomeContent.tsxのGatedHomeBodyを移設・拡張。childrenも受け取る。Phase 19でget_group_conversation_listを統合）
+│   │   ├── ShellRow.tsx         # サイドバー/メインのmd:分割。useSelectedLayoutSegmentでモバイル幅の表示切替を判定（Phase 23でサイドバー幅をmd:w-[32rem]→md:w-80に縮小、2カラム横並び用だったmd:flex-rowを削除）
+│   │   ├── GatedShellBody.tsx   # 起動時ゲート有効時のクライアント側取得＋描画（旧components/home/HomeContent.tsxのGatedHomeBodyを移設・拡張。childrenも受け取る。Phase 19でget_group_conversation_listを統合、Phase 23でAddUserPanel+HomeTabsの組み立てをSidebarNav呼び出しに置換）
 │   │   └── ShellFriendshipsSync.tsx  # 非ゲート時のfriendships Realtime購読（旧HomeContent.tsxの該当effectを移設）
 │   ├── chat/
 │   │   ├── ChatRoom.tsx             # チャット画面本体・Realtime購読・画像添付・ブロックUI・削除/非表示・オプションメニュー（Phase 3/4/5/6。Phase 8でtry/catch化・空状態・日付区切り等のUX修正、Phase 14でテキスト送信の自動リトライ（SRS 3.4）、Phase 17でルート要素をh-screenからh-full flex-1へ変更、Phase 19でotherUser単数propをpeer: ChatPeer判別共用体へ変更しグループ対応、Phase 21でgroupMembersローカルstate・メンバー管理モーダル配線を追加）
@@ -1364,9 +1415,11 @@ tiliq-chat/
 │   │   ├── GatedChatRoomLoader.tsx  # 各チャットゲート有効時のクライアント側取得（Phase 6・新規。Phase 8でメッセージ取得エラー処理を追加、Phase 18でDB問い合わせをPromise.allで並列化、Phase 19でisGroup propによるグループ/DM分岐を追加、Phase 21でグループ分岐にroleを追加）
 │   │   └── HiddenMessagesList.tsx   # 非表示メッセージ一覧本体（Phase 6・新規。Phase 8でtry/catch化・画像alt修正）
 │   └── home/                    # Phase 5・新規ディレクトリ
-│       ├── HomeTabs.tsx         # フレンド/ストレンジャー/グループタブ・一時チャットバッジ（Phase 5/6。Phase 8でフレンド解除ボタン・取得エラー表示、Phase 9でFR-14検索フィルタ・レスポンシブレイアウト対応を追加。中身はPhase 17でも無変更のままシェルのsidebarスロットへ移設。Phase 19でConversationItemを判別共用体化しグループタブを有効化、CreateGroupPanelへの導線を追加）
-│       ├── AddUserPanel.tsx     # ユーザー検索・フレンド申請・簡易ブロック・一時チャット期限選択（Phase 5/6。Phase 8でtry/catch化・ESLintエラー解消・検索0件表示、Phase 9でFR-15レスポンシブ配置（PCサイドバー/スマホボトムバー）、Phase 13でPC常時展開、Phase 16で検索結果のレイアウト崩れ・申請中メッセージボタン消失を修正。中身はPhase 17・19でも無変更）
-│       ├── CreateGroupPanel.tsx # グループ作成UI（Phase 19・新規）。検索結果の複数選択→createGroupRoom呼び出し。HomeTabs.tsxの「グループ」タブ内から開く
+│       ├── SidebarNav.tsx       # サイドバー全体の合成コンポーネント（Phase 23・新規）。「検索」「一覧」タブの排他切替（PC/モバイル問わず）＋「＋」新規作成メニュー（グループ/一時チャット）＋選択中ビュー（AddUserPanelまたはHomeTabs）をまとめる。app/(shell)/layout.tsx・components/shell/GatedShellBody.tsxはこのコンポーネント経由でサイドバーを描画する
+│       ├── HomeTabs.tsx         # 「一覧」タブの中身：すべて/フレンド/ストレンジャー/グループの4サブタブ・一時チャットバッジ（Phase 5/6。Phase 8でフレンド解除ボタン・取得エラー表示、Phase 9でFR-14検索フィルタ・レスポンシブレイアウト対応を追加。中身はPhase 17でも無変更のままシェルのsidebarスロットへ移設。Phase 19でConversationItemを判別共用体化しグループタブを有効化、CreateGroupPanelへの導線を追加。Phase 23で「すべて」タブ（統合ソート）を追加しデフォルト化、グループ作成導線をSidebarNav側の「＋」メニューへ移管、FR-14検索をグループにも拡張）
+│       ├── AddUserPanel.tsx     # 「検索」タブの中身：ユーザー検索・フレンド申請・簡易ブロック（Phase 5/6。Phase 8でtry/catch化・ESLintエラー解消・検索0件表示、Phase 9でFR-15レスポンシブ配置（PCサイドバー/スマホボトムバー）、Phase 13でPC常時展開、Phase 16で検索結果のレイアウト崩れ・申請中メッセージボタン消失を修正。Phase 23で開閉chrome（open state・固定配置・PC常時展開スタイル）と一時チャット期限選択UIを削除し、表示制御をSidebarNav側に委ねる単純な内容物に縮小。有効期限UIはCreateTempChatPanel.tsxへ移設）
+│       ├── CreateGroupPanel.tsx # グループ作成モーダル（Phase 19・新規）。検索結果の複数選択→createGroupRoom呼び出し。Phase 23でサイドバー「＋」メニューから開くモーダルに変更（旧：HomeTabs.tsxのグループタブ内インライン展開）。components/ui/Modal.tsxでラップ
+│       ├── CreateTempChatPanel.tsx # 一時チャット作成モーダル（Phase 23・新規）。旧AddUserPanel.tsxの検索結果行にあった有効期限セレクターを、単一選択の検索フローに載せ替えて独立させたもの。サイドバー「＋」メニューから開く
 │       └── HomeHeader.tsx       # ホーム画面ヘッダー（ロゴ・ユーザー名・設定/ログアウト導線）（Phase 16・新規。Phase 17でapp/(shell)/layout.tsx・components/shell/GatedShellBody.tsxから呼ばれる形に変更）
 ├── types/
 │   └── supabase.ts              # Supabase生成型定義（Phase 3で導入、Phase 5/6で再生成）
@@ -1385,16 +1438,16 @@ tiliq-chat/
 
 （`components/chat/NewDmForm.tsx`はPhase 5で`AddUserPanel`に統合されたため削除済み。`components/home/StrangerDmToggle.tsx`はPhase 7で`NotificationSettingsForm`に統合されたため削除済み。`app/actions/rooms.ts`の`startDirectMessage`関数はPhase 8でデッドコードとして削除済み。`components/home/HomeContent.tsx`はPhase 17で`components/shell/`へ移設・分割されたため削除済み）
 
-## 次にやること（Phase 22・未確定）
+## 次にやること（Phase 23・未確定）
 
-**Phase 15をもって、現行スコープでの「一旦完成・既知の問題なし」という区切りに到達した。** ここから先は新機能・仕様変更のラウンドとして扱う（ユーザー自身の言葉：「とりあえず完成、一旦問題はない、という状態に持っていって、そこから今後、新機能や仕様変更等の作業をする」）。Phase 16でUIバグ3件を修正しつつナビゲーション構造刷新の構想が寄せられ、Phase 17でその構想をNext.js実物ドキュメントで裏取りしたうえでM1（永続サイドバーシェルの骨組み）まで実装、Phase 18でチャット切り替え速度改善と起動時ゲートバイパス修正、Phase 19でグループチャットUI M1、Phase 20でeslint/typescript再チェック、Phase 21でグループチャットM2（メンバー管理）、Phase 22でグループチャットM3（オーナー譲渡・グループ削除）を実装した。
+**Phase 15をもって、現行スコープでの「一旦完成・既知の問題なし」という区切りに到達した。** ここから先は新機能・仕様変更のラウンドとして扱う（ユーザー自身の言葉：「とりあえず完成、一旦問題はない、という状態に持っていって、そこから今後、新機能や仕様変更等の作業をする」）。Phase 16でUIバグ3件を修正しつつナビゲーション構造刷新の構想が寄せられ、Phase 17でその構想をNext.js実物ドキュメントで裏取りしたうえでM1（永続サイドバーシェルの骨組み）まで実装、Phase 18でチャット切り替え速度改善と起動時ゲートバイパス修正、Phase 19でグループチャットUI M1、Phase 20でeslint/typescript再チェック、Phase 21でグループチャットM2（メンバー管理）、Phase 22でグループチャットM3（オーナー譲渡・グループ削除）、Phase 23でサイドバーUI再設計（検索/一覧タブ排他切替・＋新規作成メニュー）を実装した。
 
 以下は次ラウンドの候補（優先度未確定）。ユーザーから「許可不要で計画→実装を繰り返してよい、コミットも自由に行ってよい」との承認済み（2026-08-12）のため、次回セッションでは基本的にこのリストから妥当なものを選んで自律的に進めてよい：
 
 1. ~~ナビゲーション構造刷新M1（Phase 17実装分）の実機確認~~ → **実機確認済み（2026-08-13）。** 問題なし。ヘッダー非表示化・AuthGate位置調整も含めすべて確認完了
 2. ~~チャット切り替え時の体感速度改善（クエリ並列化）~~ → **Phase 18で対応済み（2026-08-13）。** `app/(shell)/chat/[roomId]/page.tsx`・`components/chat/GatedChatRoomLoader.tsx`の直列DB問い合わせを`Promise.all`で4段階に圧縮。詳細は「Phase 18 の実装内容・詳細」参照。実機での体感速度改善確認は次回ユーザー確認待ち。ヘッダー/入力欄を再読み込みしないSuspense分離案（`template.tsx`の強制リマウント設計との整合性検討が必要）は引き続き未着手・候補として残す
 3. ~~グループチャットUI（FR-4）M1の実装~~ → **Phase 19で対応済み（2026-08-13）。** グループ作成・一覧表示・送信者名表示付きメッセージ送受信を実装。詳細は「Phase 19 の実装内容・詳細」参照。DB層は`execute_sql`での直接検証済み、実機でのUI操作確認は次回ユーザー確認待ち。メンバー管理UI（追加・削除・退出）は次のM-phase候補
-4. **サイドバー内部UIの再設計：** 「検討中のアイデア」節3.参照。「検索⇄一覧」のトグル切り替えUI、「＋」新規作成メニュー（グループ・一時チャット作成をここに統合する構想）。Phase 17では骨組みのみで、既存`AddUserPanel.tsx`/`HomeTabs.tsx`の中身は意図的に変更していない。Phase 19の`CreateGroupPanel`は暫定的に`HomeTabs.tsx`のグループタブ内に配置しており、本格的なサイドバー再設計時には置き場所を再検討する余地がある
+4. ~~サイドバー内部UIの再設計~~ → **Phase 23で対応済み（2026-08-14）。** 「検索」「一覧」タブの排他切替（PC/モバイル問わず、Phase13のPC常時展開は撤回）＋「＋」新規作成メニュー（グループ作成・一時チャット作成）＋「一覧」タブの統合「すべて」ビューを実装。詳細は「Phase 23 の実装内容・詳細」参照。実機確認は次回ユーザー確認待ち。**残る候補：** `GroupMembersPanel.tsx`のModal.tsx追従、サイドバー幅`md:w-80`の実機調整、`docs/srs.md` 3.2.1節の検索タブ注記の整合
 5. **実機フィードバックで見つかった小粒課題群：** 「検討中のアイデア」節4.参照（ホームへ戻るUI、一時チャットの命名・複数保持・チャット画面からの作成、スクロールバー、プロフィール概念、既読機能、タブUI統一方針）。優先度未確定のため、着手する場合はユーザーと相談のうえ妥当なものから選ぶ
 6. ~~`/chat/[roomId]/hidden/page.tsx`の起動時ゲートバイパス修正~~ → **Phase 18で対応済み（2026-08-13）。** 詳細は「Phase 18 の実装内容・詳細」内の該当節を参照。実機確認は次回ユーザー確認待ち
 7. ~~`eslint`（9→10）・`typescript`（6.0→7系）のメジャー更新の再挑戦~~ → **Phase 20で再チェック済み（2026-08-13）。継続ブロック、状況変化なし。** `eslint-plugin-react`のPR #4022は依然オープン（メンテナ最終アクション待ち）、TypeScript 7.1も未リリース。次回はPR #4022のマージ有無・TypeScript 7.1リリースから確認するとよい（詳細は「Phase 20 の実装内容・詳細」参照）
