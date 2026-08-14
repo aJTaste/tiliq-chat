@@ -119,7 +119,7 @@ export function CreateGroupPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <Modal onClose={onClose} labelledBy="create-group-title">
-      <div className="flex flex-col gap-3 rounded-lg border border-band bg-surface-raised p-4">
+      <div className="flex flex-col gap-2.5 rounded-lg border border-band bg-surface-raised p-3">
         <div className="flex items-center justify-between">
           <p
             id="create-group-title"

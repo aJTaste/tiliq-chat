@@ -63,13 +63,6 @@ function byLastMessageDesc(a: ConversationItem, b: ConversationItem): number {
   );
 }
 
-const FRIENDSHIP_BADGE: Partial<Record<FriendshipStatus, string>> = {
-  pending_sent: "申請中",
-  pending_received: "申請あり",
-  rejected: "未フレンド",
-  none: "未フレンド",
-};
-
 function formatRelativeTime(iso: string | null): string {
   if (!iso) return "";
   const date = new Date(iso);
@@ -116,32 +109,29 @@ function ConversationRow({
   // Phase 8: フレンド解除ボタンを追加。行全体がLinkのため、Link内にbuttonを
   // ネストしない（無効なHTML構造を避ける）よう、Linkとbuttonを兄弟要素として
   // 横並びにしている。
+  // デザイン修正：友情状態チップ（「未フレンド」「申請中」等）は情報として不要と
+  // 判断され削除した。一覧は「誰と・いつ・何を話したか」の3点に絞る。
   return (
     <div className="flex items-center">
       <Link
         href={`/chat/${item.roomId}`}
-        className="flex min-w-0 flex-1 items-center gap-3 px-6 py-4 transition-colors hover:bg-surface-raised"
+        className="flex min-w-0 flex-1 items-center gap-2.5 px-4 py-2.5 transition-colors hover:bg-surface-raised"
       >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-xs text-ink-muted">
           {item.otherDisplayName.slice(0, 1)}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="truncate font-medium text-ink">
+            <p className="truncate text-sm font-medium text-ink">
               {item.otherDisplayName}
             </p>
-            {item.friendshipStatus !== "accepted" && (
-              <span className="shrink-0 rounded-full border border-band px-1.5 py-0.5 font-label text-[10px] text-ink-muted">
-                {FRIENDSHIP_BADGE[item.friendshipStatus] ?? "未フレンド"}
-              </span>
-            )}
             {item.isTemporary && (
               <span className="shrink-0 rounded-full border border-clay/60 px-1.5 py-0.5 font-label text-[10px] text-clay">
                 {formatRemainingTime(item.expiresAt) ?? "一時チャット"}
               </span>
             )}
           </div>
-          <p className="truncate text-sm text-ink-muted">
+          <p className="truncate text-xs text-ink-muted">
             {item.lastMessagePreview ?? "まだメッセージがありません"}
           </p>
         </div>
@@ -157,7 +147,7 @@ function ConversationRow({
           }
           disabled={removingUserId === item.otherUserId}
           aria-label={`${item.otherDisplayName}とのフレンドを解除`}
-          className="mr-4 shrink-0 rounded-lg border border-band px-2 py-1 font-label text-[10px] text-ink-muted transition-colors hover:bg-surface disabled:opacity-60"
+          className="mr-3 shrink-0 rounded-lg border border-band px-2 py-1 font-label text-[10px] text-ink-muted transition-colors hover:bg-surface disabled:opacity-60"
         >
           解除
         </button>
@@ -176,20 +166,20 @@ function GroupConversationRow({ item }: { item: ConversationItem & { kind: "grou
   return (
     <Link
       href={`/chat/${item.roomId}`}
-      className="flex min-w-0 flex-1 items-center gap-3 px-6 py-4 transition-colors hover:bg-surface-raised"
+      className="flex min-w-0 flex-1 items-center gap-2.5 px-4 py-2.5 transition-colors hover:bg-surface-raised"
     >
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-xs text-ink-muted">
         {(item.groupName?.slice(0, 1) ?? item.memberNames[0]?.slice(0, 1)) ||
           "G"}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <p className="truncate font-medium text-ink">{displayName}</p>
+          <p className="truncate text-sm font-medium text-ink">{displayName}</p>
           <span className="shrink-0 rounded-full border border-band px-1.5 py-0.5 font-label text-[10px] text-ink-muted">
             {item.memberCount}人
           </span>
         </div>
-        <p className="truncate text-sm text-ink-muted">
+        <p className="truncate text-xs text-ink-muted">
           {item.lastMessagePreview ?? "まだメッセージがありません"}
         </p>
       </div>
@@ -202,47 +192,15 @@ function GroupConversationRow({ item }: { item: ConversationItem & { kind: "grou
 
 type TabKey = "all" | "friends" | "strangers" | "group";
 
-function TabButton({
-  label,
-  count,
-  active,
-  onClick,
-  disabled,
-}: {
-  label: string;
-  count?: number;
-  active: boolean;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`relative px-4 py-3 font-label text-xs uppercase tracking-wide transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-        active ? "text-tongue" : "text-ink-muted hover:text-ink"
-      }`}
-    >
-      {label}
-      {typeof count === "number" && count > 0 && (
-        <span className="ml-1 text-ink-muted">({count})</span>
-      )}
-      {active && (
-        <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-tongue" />
-      )}
-    </button>
-  );
-}
-
 /**
  * サイドバー「一覧」タブの中身（SRS 3.2.1）。「すべて／フレンド／ストレンジャー／
- * グループ」の4サブタブを持つ。「すべて」は全種別を直近メッセージ順に統合した
+ * グループ」の4サブフィルタを持つ。「すべて」は全種別を直近メッセージ順に統合した
  * ビューで、フレンド/ストレンジャー/グループは従来通りの絞り込み表示（サイドバー
- * UI再設計で追加。旧実装は「すべて」ビューを持たず3タブが完全に独立していた）。
- * グループ作成の導線（旧：グループタブ内のインライン展開）はサイドバー「＋」メニュー
- * （components/home/SidebarNav.tsx）に移管したため、このコンポーネントは
- * CreateGroupPanel.tsxを知らない。
+ * UI再設計で追加）。サブフィルタの切替はデザイン修正でタブボタン列から
+ * `<select>`に変更した（縦方向のスペースを取らないようにするため、検索欄と
+ * 同じ行に配置）。グループ作成の導線（旧：グループタブ内のインライン展開）は
+ * サイドバー「＋」メニュー（components/home/SidebarNav.tsx）に移管したため、
+ * このコンポーネントはCreateGroupPanel.tsxを知らない。
  *
  * Phase 8: `app/actions/friends.ts`のremoveFriendはPhase 5から実装済みだったが
  * 呼び出すUIが無かったため、フレンド行に「解除」ボタンを追加した。一覧の更新は
@@ -324,59 +282,43 @@ export function HomeTabs({
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="flex border-b border-band/60 px-2">
-        <TabButton
-          label="すべて"
-          count={conversations.length}
-          active={tab === "all"}
-          onClick={() => setTab("all")}
-        />
-        <TabButton
-          label="フレンド"
-          count={friends.length}
-          active={tab === "friends"}
-          onClick={() => setTab("friends")}
-        />
-        <TabButton
-          label="ストレンジャー"
-          count={strangers.length}
-          active={tab === "strangers"}
-          onClick={() => setTab("strangers")}
-        />
-        <TabButton
-          label="グループ"
-          count={groupConversations.length}
-          active={tab === "group"}
-          onClick={() => setTab("group")}
-        />
-      </div>
-
       {!loadError && (
-        <div className="px-6 py-2">
+        <div className="flex gap-2 px-4 py-2">
+          <select
+            value={tab}
+            onChange={(e) => setTab(e.target.value as TabKey)}
+            aria-label="会話の絞り込み"
+            className="w-32 shrink-0 rounded-lg border border-band bg-surface-raised px-2 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+          >
+            <option value="all">すべて</option>
+            <option value="friends">フレンド</option>
+            <option value="strangers">ストレンジャー</option>
+            <option value="group">グループ</option>
+          </select>
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="会話を検索"
             aria-label="会話を検索"
-            className="w-full rounded-lg border border-band bg-surface-raised px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+            className="min-w-0 flex-1 rounded-lg border border-band bg-surface-raised px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
           />
         </div>
       )}
 
       {removeError && (
-        <p className="px-6 py-2 text-xs text-clay" role="alert">
+        <p className="px-4 py-2 text-xs text-clay" role="alert">
           {removeError}
         </p>
       )}
 
       <div className="flex-1 overflow-y-auto">
         {loadError ? (
-          <p className="px-6 py-8 text-center text-sm text-clay" role="alert">
+          <p className="px-4 py-8 text-center text-sm text-clay" role="alert">
             読み込みに失敗しました。再読み込みしてください。
           </p>
         ) : items.length === 0 ? (
-          <p className="px-6 py-8 text-center text-sm text-ink-muted">
+          <p className="px-4 py-8 text-center text-sm text-ink-muted">
             {tab === "all"
               ? "まだ会話がありません。"
               : tab === "friends"
@@ -386,7 +328,7 @@ export function HomeTabs({
                   : "まだグループチャットがありません。"}
           </p>
         ) : filteredItems.length === 0 ? (
-          <p className="px-6 py-8 text-center text-sm text-ink-muted">
+          <p className="px-4 py-8 text-center text-sm text-ink-muted">
             検索条件に一致する会話がありません。
           </p>
         ) : (

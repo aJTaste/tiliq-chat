@@ -82,49 +82,45 @@ export function SidebarNav({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between border-b border-band/60 pr-2">
-        <div className="flex">
+      <div className="flex items-center gap-2 border-b border-band/60 p-2">
+        {/* デザイン修正：検索/一覧の切替は最上位のナビゲーションのため、他の要素とは
+            逆に幅・タップ領域を広く取る（セグメントコントロール形式）。 */}
+        <div className="flex flex-1 gap-1 rounded-lg bg-surface p-1">
           <button
             type="button"
             onClick={() => setActiveView("list")}
-            className={`relative px-4 py-3 font-label text-xs uppercase tracking-wide transition-colors ${
+            className={`flex-1 rounded-md px-4 py-2.5 text-sm font-medium transition-colors ${
               activeView === "list"
-                ? "text-tongue"
+                ? "bg-tongue text-white"
                 : "text-ink-muted hover:text-ink"
             }`}
           >
             一覧
-            {activeView === "list" && (
-              <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-tongue" />
-            )}
           </button>
           <button
             type="button"
             onClick={() => setActiveView("search")}
-            className={`relative flex items-center gap-1.5 px-4 py-3 font-label text-xs uppercase tracking-wide transition-colors ${
+            className={`relative flex-1 rounded-md px-4 py-2.5 text-sm font-medium transition-colors ${
               activeView === "search"
-                ? "text-tongue"
+                ? "bg-tongue text-white"
                 : "text-ink-muted hover:text-ink"
             }`}
           >
             検索
             {unreadCount > 0 && activeView !== "search" && (
-              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-clay px-1 text-[10px] font-medium text-white">
+              <span className="absolute right-2 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full bg-clay px-1 text-[10px] font-medium text-white">
                 {unreadCount}
               </span>
-            )}
-            {activeView === "search" && (
-              <span className="absolute inset-x-3 -bottom-px h-0.5 rounded-full bg-tongue" />
             )}
           </button>
         </div>
 
-        <div ref={menuRef} className="relative">
+        <div ref={menuRef} className="relative shrink-0">
           <button
             type="button"
             onClick={() => setCreateMenuOpen((v) => !v)}
             aria-label="新規作成"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-band text-lg text-ink-muted transition-colors hover:bg-surface-raised"
+            className="flex h-10 w-10 items-center justify-center rounded-lg border border-band text-lg text-ink-muted transition-colors hover:bg-surface-raised"
           >
             ＋
           </button>

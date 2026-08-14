@@ -263,7 +263,7 @@ export function AddUserPanel({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3">
       <input
         type="text"
         value={query}
@@ -288,11 +288,11 @@ export function AddUserPanel({
       )}
 
       {results.length > 0 && (
-        <ul className="flex flex-col gap-2">
+        <ul className="flex flex-col gap-1.5">
           {results.map((r) => (
             <li
               key={r.userId}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-1.5"
             >
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-ink">
@@ -344,15 +344,15 @@ export function AddUserPanel({
       )}
 
       {receivedPending.length > 0 && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1.5">
           <p className="font-label text-xs uppercase tracking-wide text-ink-muted">
             届いているフレンド申請
           </p>
-          <ul className="flex flex-col gap-2">
+          <ul className="flex flex-col gap-1.5">
             {receivedPending.map((r) => (
               <li
                 key={r.friendshipId}
-                className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
+                className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-1.5"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-ink">
@@ -387,15 +387,15 @@ export function AddUserPanel({
       )}
 
       {sentRequests.length > 0 && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1.5">
           <p className="font-label text-xs uppercase tracking-wide text-ink-muted">
             送信したフレンド申請
           </p>
-          <ul className="flex flex-col gap-2">
+          <ul className="flex flex-col gap-1.5">
             {sentRequests.map((r) => (
               <li
                 key={r.friendshipId}
-                className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
+                className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-1.5"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-ink">
@@ -423,15 +423,15 @@ export function AddUserPanel({
         </div>
       )}
       {blockedUsers.length > 0 && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1.5">
           <p className="font-label text-xs uppercase tracking-wide text-ink-muted">
             ブロック中のユーザー
           </p>
-          <ul className="flex flex-col gap-2">
+          <ul className="flex flex-col gap-1.5">
             {blockedUsers.map((u) => (
               <li
                 key={u.userId}
-                className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-2"
+                className="flex items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-1.5"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-ink">
