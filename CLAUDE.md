@@ -132,6 +132,7 @@ Supabaseダッシュボードの操作上の注意点（Realtimeパブリケー�
 | 22    | グループチャットM3（オーナー譲渡・グループ削除）                          | 完了 | [phase-22](docs/phases/phase-22-group-chat-m3-ownership.md) |
 | 23    | サイドバーUI再設計（検索/一覧タブ排他切替・＋新規作成メニュー・デザイン密度調整） | 完了 | [phase-23](docs/phases/phase-23-sidebar-redesign.md) |
 | 24    | グループチャットM4（グループ名変更・アバター設定）・メッセージ送信が「送信中」のまま固まるバグの修正 | 完了 | [phase-24](docs/phases/phase-24-group-chat-m4.md) |
+| 25    | チャット画面からその場で一時チャットを作成できる機能（既存DM相手でも複数作成可・一覧の一時チャットフィルタ・一覧/検索の右クリックメニュー） | 完了 | [phase-25](docs/phases/phase-25-temp-chat-quick-create.md) |
 
 次にやることは `docs/backlog.md` を参照。
 

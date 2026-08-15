@@ -11,6 +11,8 @@ import {
 import { startDirectMessageWithUser } from "@/app/actions/rooms";
 import { blockUser, unblockUser } from "@/app/actions/blocks";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
+import { useRowContextMenu } from "@/lib/hooks/useRowContextMenu";
+import { CreateTempChatWithUserModal } from "./CreateTempChatWithUserModal";
 
 export type FriendRequestItem = {
   friendshipId: string;
@@ -37,6 +39,113 @@ type SearchResult = {
 };
 
 const SEARCH_DEBOUNCE_MS = 300;
+
+// Phase 25: 検索結果の各行に「その場メニュー」（右クリック/長押し・常時は隠れた
+// ケバブボタン）を追加し、そこから相手との一時チャットを作成できるようにする。
+// useRowContextMenuはフックのため、配列mapのコールバック内では呼べず、独立した
+// コンポーネントとして切り出す必要がある（components/home/HomeTabs.tsxの
+// ConversationRowと同じ理由・同じパターン）。
+function SearchResultRow({
+  result,
+  pending,
+  onAddFriend,
+  onMessage,
+  onBlock,
+  onCreateTempChat,
+}: {
+  result: SearchResult;
+  pending: boolean;
+  onAddFriend: (userId: string) => void;
+  onMessage: (userId: string, existingRoomId: string | null) => void;
+  onBlock: (userId: string) => void;
+  onCreateTempChat: (userId: string, displayName: string, username: string) => void;
+}) {
+  const { open, setOpen, close, wrapperRef, rowHandlers } =
+    useRowContextMenu<HTMLLIElement>();
+
+  return (
+    <li
+      ref={wrapperRef}
+      {...rowHandlers}
+      className="group relative flex flex-wrap items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-1.5"
+    >
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium text-ink">
+          {result.displayName}
+        </p>
+        <p className="truncate text-xs text-ink-muted">@{result.username}</p>
+      </div>
+      <div className="flex w-full flex-wrap items-center gap-1.5">
+        {/* Phase 16: 「メッセージ」ボタンはフレンド状態に関わらず常に表示する。
+            DM開始はフレンド関係を要求しないため（get_or_create_dm_room参照）、
+            以前は申請中(pending_sent)の間だけボタンが「申請中」表示に置き換わって
+            消えてしまっていた不具合を修正（申請中ラベルとメッセージボタンを併存させる）。 */}
+        {result.friendshipStatus === "pending_sent" && (
+          <span className="text-xs text-ink-muted">申請中</span>
+        )}
+        {result.friendshipStatus !== "accepted" &&
+          result.friendshipStatus !== "pending_sent" && (
+            <button
+              type="button"
+              onClick={() => onAddFriend(result.userId)}
+              disabled={pending}
+              className="rounded-lg border border-tongue px-2.5 py-1 text-xs font-medium text-tongue disabled:opacity-60"
+            >
+              フレンド申請
+            </button>
+          )}
+        <button
+          type="button"
+          onClick={() => onMessage(result.userId, result.existingRoomId)}
+          disabled={pending}
+          className="rounded-lg bg-tongue px-2.5 py-1 text-xs font-medium text-white disabled:opacity-60"
+        >
+          メッセージ
+        </button>
+        <button
+          type="button"
+          onClick={() => onBlock(result.userId)}
+          disabled={pending}
+          className="text-xs text-ink-muted underline underline-offset-2 disabled:opacity-60"
+        >
+          ブロック
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          aria-label={`${result.displayName}の操作`}
+          className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-muted opacity-0 transition-opacity hover:bg-band/30 focus-visible:opacity-100 group-hover:opacity-100"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="5" r="1.6" />
+            <circle cx="12" cy="12" r="1.6" />
+            <circle cx="12" cy="19" r="1.6" />
+          </svg>
+        </button>
+      </div>
+      {open && (
+        <div className="absolute right-0 top-full z-10 mt-1 flex w-48 flex-col overflow-hidden rounded-lg border border-band bg-surface-raised text-xs shadow-lg">
+          <button
+            type="button"
+            onClick={() => {
+              close();
+              onCreateTempChat(result.userId, result.displayName, result.username);
+            }}
+            className="whitespace-nowrap px-3 py-2 text-left text-ink transition-colors hover:bg-band/30"
+          >
+            一時チャットを作成
+          </button>
+        </div>
+      )}
+    </li>
+  );
+}
 
 /**
  * サイドバーUI再設計：ユーザー検索・DM開始・フレンド申請の送受信/承認/拒否/取り消し
@@ -66,6 +175,11 @@ export function AddUserPanel({
   const [error, setError] = useState<string | null>(null);
   const [requests, setRequests] = useState(initialRequests);
   const [blockedUsers, setBlockedUsers] = useState(initialBlockedUsers);
+  const [tempChatTarget, setTempChatTarget] = useState<{
+    userId: string;
+    displayName: string;
+    username: string;
+  } | null>(null);
   const [pending, startTransition] = useTransition();
   const [supabase] = useState(() => createClient());
   const router = useRouter();
@@ -290,55 +404,17 @@ export function AddUserPanel({
       {results.length > 0 && (
         <ul className="flex flex-col gap-1.5">
           {results.map((r) => (
-            <li
+            <SearchResultRow
               key={r.userId}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-band/60 px-3 py-1.5"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-ink">
-                  {r.displayName}
-                </p>
-                <p className="truncate text-xs text-ink-muted">
-                  @{r.username}
-                </p>
-              </div>
-              <div className="flex w-full flex-wrap items-center gap-1.5">
-                {/* Phase 16: 「メッセージ」ボタンはフレンド状態に関わらず常に表示する。
-                    DM開始はフレンド関係を要求しないため（get_or_create_dm_room参照）、
-                    以前は申請中(pending_sent)の間だけボタンが「申請中」表示に置き換わって
-                    消えてしまっていた不具合を修正（申請中ラベルとメッセージボタンを併存させる）。 */}
-                {r.friendshipStatus === "pending_sent" && (
-                  <span className="text-xs text-ink-muted">申請中</span>
-                )}
-                {r.friendshipStatus !== "accepted" &&
-                  r.friendshipStatus !== "pending_sent" && (
-                    <button
-                      type="button"
-                      onClick={() => handleAddFriend(r.userId)}
-                      disabled={pending}
-                      className="rounded-lg border border-tongue px-2.5 py-1 text-xs font-medium text-tongue disabled:opacity-60"
-                    >
-                      フレンド申請
-                    </button>
-                  )}
-                <button
-                  type="button"
-                  onClick={() => handleMessage(r.userId, r.existingRoomId)}
-                  disabled={pending}
-                  className="rounded-lg bg-tongue px-2.5 py-1 text-xs font-medium text-white disabled:opacity-60"
-                >
-                  メッセージ
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleBlock(r.userId)}
-                  disabled={pending}
-                  className="text-xs text-ink-muted underline underline-offset-2 disabled:opacity-60"
-                >
-                  ブロック
-                </button>
-              </div>
-            </li>
+              result={r}
+              pending={pending}
+              onAddFriend={handleAddFriend}
+              onMessage={handleMessage}
+              onBlock={handleBlock}
+              onCreateTempChat={(userId, displayName, username) =>
+                setTempChatTarget({ userId, displayName, username })
+              }
+            />
           ))}
         </ul>
       )}
@@ -453,6 +529,14 @@ export function AddUserPanel({
             ))}
           </ul>
         </div>
+      )}
+      {tempChatTarget && (
+        <CreateTempChatWithUserModal
+          targetUserId={tempChatTarget.userId}
+          targetDisplayName={tempChatTarget.displayName}
+          targetUsername={tempChatTarget.username}
+          onClose={() => setTempChatTarget(null)}
+        />
       )}
     </div>
   );

@@ -47,6 +47,11 @@ Phase横断で繰り返し関係してくる技術的な落とし穴・確定し
 - **バグ調査で「コンソールに一切エラーが出ないまま特定のUI操作だけが固まる」場合、まず疑うべきは（a）そもそも解決していないPromiseを待ち続けている、（b）解決はしているが後続のstate更新ガード（マウント判定・多重実行防止フラグ等）で早期returnしている、の2択。** 例外系のバグは大抵Uncaught/Unhandled Rejectionとしてコンソールに出るため、それが無いことは「その先で例外は起きていない」ことの強い手がかりになる。今回は最初(a)を疑って外れ、(b)が正解だった。Playwrightでネットワークの`request`/`response`イベントを監視し「サーバー側は成功で返っているのにUIが更新されない」ことを一次証拠で確認できれば(b)側に絞り込める
 - ホットパス（Route Handlerを経由せずSupabaseクライアントを直接呼ぶ設計）は、サーバーレス関数のタイムアウトに守られないぶん、呼び出し側で`.abortSignal(AbortSignal.timeout(ms))`を検討する価値はある（`components/chat/ChatRoom.tsx`の`insertMessageWithRetry`に残置）。ただし今回の「送信中のまま固まる」不具合の根本原因はこれではなく、上記のrefガードの罠だった（一度この仮説で外した経緯も`docs/phases/phase-24-group-chat-m4.md`に記録）。このプロジェクトで使っている`postgrest-js`のバージョンでは、`.abortSignal()`によるタイムアウトは例外throwではなく通常の`{data: null, error: {...}}`という戻り値になることをNode スクリプトで確認済み
 
+## 長押し/右クリックのその場メニュー（一覧行向け、Phase 25）
+
+- **フックは配列`.map()`のコールバック内で直接呼べない。** 一覧の各行に個別のフック状態（例：`useRowContextMenu`）を持たせたい場合、その行を独立したコンポーネントへ切り出す必要がある（`.map()`のコールバック自体はReactにとって別コンポーネントのインスタンスではないため、フックの呼び出し順序が保証されない）。実例：`components/home/HomeTabs.tsx`の`ConversationRow`、`components/home/AddUserPanel.tsx`の`SearchResultRow`
+- **長押し（タッチ）でその場メニューを開く対象がLink/buttonなどクリックで副作用（遷移等）を持つ要素を内包する場合、長押し発火後に`touchend`から合成clickイベントが後続発火し、メニューを開いた瞬間に意図しない遷移が起きることがある。** 対策は「長押しタイマーが実際に発火したか」をrefで記録しておき、対応する`touchend`でその場合のみ`preventDefault()`してゴーストクリックを抑止すること（`lib/hooks/useRowContextMenu.ts`）。`components/chat/MessageBubble.tsx`（Phase 6/9由来の長押しメニュー）はこの問題と無縁だった（対象が単純なdivでLink/buttonを内包しない）ため、この対策が必要になったのはPhase 25が初めて。実機/タッチエミュレーションでの検証はまだ行えていない点に注意（`docs/backlog.md`に持ち越し）
+
 ## ヘッドレスブラウザでの実地再現（sudoが使えない環境）
 
 - **`playwright install chromium`はsudo不要でブラウザ本体を取得できるが、実行に必要な共有ライブラリ（`libnspr4.so`/`libnss3.so`/`libasound.so.2`等）が無いと起動できない。** `playwright install --with-deps`（内部で`apt-get install`）はsudoが要るため使えない環境向けの代替：`apt-get download <パッケージ名>`（ダウンロードのみでsudo不要）で`.deb`を取得し、`dpkg-deb -x <deb> <展開先ディレクトリ>`でシステムには一切インストールせずローカルに展開、起動時に`LD_LIBRARY_PATH=<展開先>/usr/lib/x86_64-linux-gnu`を設定して読み込ませればよい。`ldd <バイナリ>`で不足ライブラリを事前に特定してから対象を絞る

@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { removeFriend } from "@/app/actions/friends";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
+import { useRowContextMenu } from "@/lib/hooks/useRowContextMenu";
+import { CreateTempChatWithUserModal } from "./CreateTempChatWithUserModal";
 
 export type FriendshipStatus =
   | "accepted"
@@ -102,18 +104,31 @@ function ConversationRow({
   item,
   onRemoveFriend,
   removingUserId,
+  onCreateTempChat,
 }: {
   item: Extract<ConversationItem, { kind: "dm" }>;
   onRemoveFriend: (userId: string, displayName: string) => void;
   removingUserId: string | null;
+  onCreateTempChat: (userId: string, displayName: string, username: string) => void;
 }) {
   // Phase 8: フレンド解除ボタンを追加。行全体がLinkのため、Link内にbuttonを
   // ネストしない（無効なHTML構造を避ける）よう、Linkとbuttonを兄弟要素として
   // 横並びにしている。
   // デザイン修正：友情状態チップ（「未フレンド」「申請中」等）は情報として不要と
   // 判断され削除した。一覧は「誰と・いつ・何を話したか」の3点に絞る。
+  // Phase 25: 右クリック/長押しで「一時チャットを作成」を選べるその場メニューを追加。
+  // MessageBubble.tsxと同じ「常時は隠れたケバブボタン（ホバー/フォーカスで表示、
+  // キーボード操作対応）＋右クリック/長押しの併用」パターンをuseRowContextMenuに
+  // 切り出して使う。
+  const { open, setOpen, close, wrapperRef, rowHandlers } =
+    useRowContextMenu<HTMLDivElement>();
+
   return (
-    <div className="flex items-center">
+    <div
+      ref={wrapperRef}
+      className="group relative flex items-center"
+      {...rowHandlers}
+    >
       <Link
         href={`/chat/${item.roomId}`}
         className="flex min-w-0 flex-1 items-center gap-2.5 px-4 py-2.5 transition-colors hover:bg-surface-raised"
@@ -152,6 +167,42 @@ function ConversationRow({
         >
           解除
         </button>
+      )}
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-label={`${item.otherDisplayName}の操作`}
+        className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-ink-muted opacity-0 transition-opacity hover:bg-band/30 focus-visible:opacity-100 group-hover:opacity-100"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="5" r="1.6" />
+          <circle cx="12" cy="12" r="1.6" />
+          <circle cx="12" cy="19" r="1.6" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute right-2 top-full z-10 mt-1 flex w-48 flex-col overflow-hidden rounded-lg border border-band bg-surface-raised text-xs shadow-lg">
+          <button
+            type="button"
+            onClick={() => {
+              close();
+              onCreateTempChat(
+                item.otherUserId,
+                item.otherDisplayName,
+                item.otherUsername,
+              );
+            }}
+            className="whitespace-nowrap px-3 py-2 text-left text-ink transition-colors hover:bg-band/30"
+          >
+            一時チャットを作成
+          </button>
+        </div>
       )}
     </div>
   );
@@ -200,13 +251,13 @@ function GroupConversationRow({ item }: { item: ConversationItem & { kind: "grou
   );
 }
 
-type TabKey = "all" | "friends" | "strangers" | "group";
+type TabKey = "all" | "friends" | "strangers" | "temp" | "group";
 
 /**
  * サイドバー「一覧」タブの中身（SRS 3.2.1）。「すべて／フレンド／ストレンジャー／
- * グループ」の4サブフィルタを持つ。「すべて」は全種別を直近メッセージ順に統合した
- * ビューで、フレンド/ストレンジャー/グループは従来通りの絞り込み表示（サイドバー
- * UI再設計で追加）。サブフィルタの切替はデザイン修正でタブボタン列から
+ * 一時チャット／グループ」の5サブフィルタを持つ。「すべて」は全種別を直近メッセージ順に
+ * 統合したビューで、フレンド/ストレンジャー/一時チャット/グループは従来通りの絞り込み
+ * 表示（サイドバーUI再設計で追加）。サブフィルタの切替はデザイン修正でタブボタン列から
  * `<select>`に変更した（縦方向のスペースを取らないようにするため、検索欄と
  * 同じ行に配置）。グループ作成の導線（旧：グループタブ内のインライン展開）は
  * サイドバー「＋」メニュー（components/home/SidebarNav.tsx）に移管したため、
@@ -217,6 +268,14 @@ type TabKey = "all" | "friends" | "strangers" | "group";
  * AddUserPanel.tsxの他のハンドラと同じくrouter.refresh()で行う（このコンポーネント
  * 自身はconversationsをローカルstateへ複製せず、親から渡されたpropsをそのまま使う設計の
  * ため）。
+ *
+ * Phase 25: 「一時チャット」サブフィルタを追加（isTemporary=trueのDMのみ。一時
+ * グループという概念は無いためgroupConversationsは対象外）。「すべて」タブでの
+ * 通常DM/一時チャットの区別は元々ConversationRowのisTemporaryバッジで済んでいた
+ * ため変更不要（通常DMの見た目は据え置き）。ConversationRowの右クリック/長押し
+ * メニューから開く一時チャット作成モーダル（CreateTempChatWithUserModal）の
+ * 対象ユーザーはこのコンポーネントでstateとして持つ（行ごとに個別のモーダルstateを
+ * 持たせると同時に複数開けてしまうため、一覧全体で1つに統一する）。
  */
 export function HomeTabs({
   conversations,
@@ -229,6 +288,11 @@ export function HomeTabs({
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [tempChatTarget, setTempChatTarget] = useState<{
+    userId: string;
+    displayName: string;
+    username: string;
+  } | null>(null);
   const router = useRouter();
 
   const dmConversations = conversations.filter(isDmConversation);
@@ -240,6 +304,7 @@ export function HomeTabs({
   const strangers = dmConversations.filter(
     (c) => c.friendshipStatus !== "accepted",
   );
+  const tempChats = dmConversations.filter((c) => c.isTemporary);
 
   const items: ConversationItem[] =
     tab === "all"
@@ -248,7 +313,9 @@ export function HomeTabs({
         ? friends
         : tab === "strangers"
           ? strangers
-          : groupConversations;
+          : tab === "temp"
+            ? tempChats
+            : groupConversations;
 
   // FR-14: フレンド・ストレンジャー・グループ一覧内の検索（AddUserPanel.tsxの
   // 新規ユーザー追加検索＝FR-15とは別物）。統合ビューでも一貫性を保つため、
@@ -303,6 +370,7 @@ export function HomeTabs({
             <option value="all">すべて</option>
             <option value="friends">フレンド</option>
             <option value="strangers">ストレンジャー</option>
+            <option value="temp">一時チャット</option>
             <option value="group">グループ</option>
           </select>
           <input
@@ -335,7 +403,9 @@ export function HomeTabs({
                 ? "まだフレンドとの会話がありません。"
                 : tab === "strangers"
                   ? "まだストレンジャーとの会話がありません。"
-                  : "まだグループチャットがありません。"}
+                  : tab === "temp"
+                    ? "まだ一時チャットがありません。"
+                    : "まだグループチャットがありません。"}
           </p>
         ) : filteredItems.length === 0 ? (
           <p className="px-4 py-8 text-center text-sm text-ink-muted">
@@ -350,6 +420,9 @@ export function HomeTabs({
                     item={item}
                     onRemoveFriend={handleRemoveFriend}
                     removingUserId={removingUserId}
+                    onCreateTempChat={(userId, displayName, username) =>
+                      setTempChatTarget({ userId, displayName, username })
+                    }
                   />
                 ) : (
                   <GroupConversationRow item={item} />
@@ -359,6 +432,14 @@ export function HomeTabs({
           </ul>
         )}
       </div>
+      {tempChatTarget && (
+        <CreateTempChatWithUserModal
+          targetUserId={tempChatTarget.userId}
+          targetDisplayName={tempChatTarget.displayName}
+          targetUsername={tempChatTarget.username}
+          onClose={() => setTempChatTarget(null)}
+        />
+      )}
     </div>
   );
 }

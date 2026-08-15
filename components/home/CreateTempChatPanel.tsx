@@ -9,6 +9,7 @@ import {
 } from "@/app/actions/rooms";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 import { Modal } from "@/components/ui/Modal";
+import { TempChatDurationField } from "./TempChatDurationField";
 
 type SearchResult = {
   userId: string;
@@ -19,22 +20,17 @@ type SearchResult = {
 
 const SEARCH_DEBOUNCE_MS = 300;
 
-const DURATION_OPTIONS: { value: TempDmDurationOption; label: string }[] = [
-  { value: "10m", label: "10分" },
-  { value: "1h", label: "1時間" },
-  { value: "24h", label: "24時間" },
-  { value: "7d", label: "7日間" },
-  { value: "custom", label: "カスタム" },
-];
-
 /**
  * サイドバーUI再設計：「＋」新規作成メニューから開く一時チャット作成モーダル。
  * 旧AddUserPanel.tsxの検索結果行に埋め込まれていた有効期限セレクターを、
  * CreateGroupPanel.tsxと同じsearch_users検索パターンに載せ替えて独立させたもの。
  * グループ作成と異なり単一選択（Mapではなくselected: SearchResult | null）。
- * 既にDMルームがある相手（existingRoomIdあり）はcreate_temp_dm_room RPCが既存ルーム
- * 検索をしない仕様のため、重複ルーム防止のガードとして選択不可にする（旧
- * AddUserPanel.tsxの!r.existingRoomIdガードを踏襲）。
+ *
+ * Phase 25：既にDMルームがある相手（existingRoomIdあり）を選択不可にしていたガードを
+ * 撤廃した。create_temp_dm_room RPCは元々既存ルームとのマージを一切行わない設計
+ * （常に新規room作成）なので、選択を禁止する技術的な必要性は無く、単に「通常DMとは
+ * 別に何個でも一時チャットを作りたい」というユースケースを塞いでいただけだった。
+ * existingRoomIdバッジは選択の可否には関わらない参考情報として残す。
  */
 export function CreateTempChatPanel({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
@@ -190,9 +186,8 @@ export function CreateTempChatPanel({ onClose }: { onClose: () => void }) {
                   <li key={user.userId}>
                     <button
                       type="button"
-                      onClick={() => !user.existingRoomId && setSelected(user)}
-                      disabled={Boolean(user.existingRoomId)}
-                      className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-ink transition-colors hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => setSelected(user)}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-ink transition-colors hover:bg-surface"
                     >
                       <span className="min-w-0 truncate">
                         {user.displayName}
@@ -213,48 +208,14 @@ export function CreateTempChatPanel({ onClose }: { onClose: () => void }) {
           </>
         )}
 
-        <div className="flex items-center gap-1.5">
-          <select
-            value={duration}
-            onChange={(e) =>
-              setDuration(e.target.value as TempDmDurationOption)
-            }
-            aria-label="有効期限"
-            className="rounded-lg border border-band bg-surface px-2 py-1.5 text-sm text-ink-muted"
-          >
-            {DURATION_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          {duration === "custom" && (
-            <span className="flex items-center gap-1">
-              <input
-                type="number"
-                min={1}
-                value={customAmount}
-                onChange={(e) => setCustomAmount(e.target.value)}
-                aria-label="有効期限（数値）"
-                className="w-16 rounded-lg border border-band bg-surface px-1.5 py-1.5 text-sm text-ink"
-              />
-              <select
-                value={customUnit}
-                onChange={(e) =>
-                  setCustomUnit(
-                    e.target.value as "minutes" | "hours" | "days",
-                  )
-                }
-                aria-label="有効期限の単位"
-                className="rounded-lg border border-band bg-surface px-1.5 py-1.5 text-sm text-ink-muted"
-              >
-                <option value="minutes">分</option>
-                <option value="hours">時間</option>
-                <option value="days">日</option>
-              </select>
-            </span>
-          )}
-        </div>
+        <TempChatDurationField
+          duration={duration}
+          onDurationChange={setDuration}
+          customAmount={customAmount}
+          onCustomAmountChange={setCustomAmount}
+          customUnit={customUnit}
+          onCustomUnitChange={setCustomUnit}
+        />
 
         {error && (
           <p className="text-xs text-clay" role="alert">

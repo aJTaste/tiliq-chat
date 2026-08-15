@@ -29,6 +29,7 @@ import { blockUser, unblockUser } from "@/app/actions/blocks";
 import { deleteMessage, hideMessage } from "@/app/actions/messages";
 import { ChatRoomOptionsMenu } from "./ChatRoomOptionsMenu";
 import { GroupMembersPanel } from "./GroupMembersPanel";
+import { CreateTempChatWithUserModal } from "@/components/home/CreateTempChatWithUserModal";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 type MessageRow = Tables<"messages">;
@@ -165,6 +166,8 @@ export function ChatRoom({
     peer.kind === "group" ? peer.avatarUrl : null,
   );
   const [membersOpen, setMembersOpen] = useState(false);
+  // Phase 25: チャット画面からその場でDM相手との一時チャットを作成する導線。
+  const [tempChatOpen, setTempChatOpen] = useState(false);
 
   // Phase 6: メッセージ削除（FR-16）・非表示（FR-17）。
   // 非表示は自分の画面にのみ影響するローカルなフィルタなのでRealtime購読は不要。
@@ -701,9 +704,18 @@ export function ChatRoom({
             isTemporary={isTemporary}
             peer={peer}
             onOpenMembers={() => setMembersOpen(true)}
+            onOpenTempChat={() => setTempChatOpen(true)}
           />
         </div>
       </header>
+      {tempChatOpen && peer.kind === "dm" && (
+        <CreateTempChatWithUserModal
+          targetUserId={peer.id}
+          targetDisplayName={peer.displayName}
+          targetUsername={peer.username}
+          onClose={() => setTempChatOpen(false)}
+        />
+      )}
       {membersOpen && peer.kind === "group" && (
         <GroupMembersPanel
           roomId={roomId}

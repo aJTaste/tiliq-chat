@@ -13,6 +13,10 @@ import type { ChatPeer } from "./ChatRoom";
  * 一時チャットの場合はFR-10の「チャットを閉じる」をまとめる。
  * Phase 21: グループの場合のみ「メンバー一覧」エントリを表示する
  * （新ルートは作らず、onOpenMembersでChatRoom.tsx側のモーダルを開くだけ）。
+ * Phase 25: DMの場合のみ「一時チャットを作成」エントリを表示する（サイドバーを
+ * 経由せず、今開いているDM相手とその場で一時チャットを開始できるようにする導線。
+ * onOpenTempChatでChatRoom.tsx側のCreateTempChatWithUserModalを開くだけで、
+ * onOpenMembersと同じ「モーダルの実体は親が持つ」設計を踏襲する）。
  */
 export function ChatRoomOptionsMenu({
   roomId,
@@ -20,12 +24,14 @@ export function ChatRoomOptionsMenu({
   isTemporary,
   peer,
   onOpenMembers,
+  onOpenTempChat,
 }: {
   roomId: string;
   initialAuthRequired: boolean;
   isTemporary: boolean;
   peer: ChatPeer;
   onOpenMembers: () => void;
+  onOpenTempChat: () => void;
 }) {
   const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -128,6 +134,18 @@ export function ChatRoomOptionsMenu({
               className="px-3 py-2 text-left text-ink transition-colors hover:bg-band/30"
             >
               メンバー一覧
+            </button>
+          )}
+          {peer.kind === "dm" && (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenTempChat();
+                setOpen(false);
+              }}
+              className="px-3 py-2 text-left text-ink transition-colors hover:bg-band/30"
+            >
+              一時チャットを作成
             </button>
           )}
           <button
