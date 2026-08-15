@@ -131,6 +131,7 @@ Supabaseダッシュボードの操作上の注意点（Realtimeパブリケー�
 | 21    | グループチャットM2（メンバー一覧・追加・削除・退出）                      | 完了 | [phase-21](docs/phases/phase-21-group-chat-m2-members.md) |
 | 22    | グループチャットM3（オーナー譲渡・グループ削除）                          | 完了 | [phase-22](docs/phases/phase-22-group-chat-m3-ownership.md) |
 | 23    | サイドバーUI再設計（検索/一覧タブ排他切替・＋新規作成メニュー・デザイン密度調整） | 完了 | [phase-23](docs/phases/phase-23-sidebar-redesign.md) |
+| 24    | グループチャットM4（グループ名変更・アバター設定）・メッセージ送信が「送信中」のまま固まるバグの修正 | 完了 | [phase-24](docs/phases/phase-24-group-chat-m4.md) |
 
 次にやることは `docs/backlog.md` を参照。
 

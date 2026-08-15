@@ -19,6 +19,7 @@ Phase横断で繰り返し関係してくる技術的な落とし穴・確定し
 - **`drop function` → `create function`し直した関数は、古いACL（anon revoke含む）を引き継がない。** 新しいOIDの関数として扱われるため、戻り値の型変更等で`drop`→`create`が必要になった際は、anon revokeのやり直しを忘れずに（`create or replace`のままなら不要）
 - **「SELECTポリシーの条件を書き換えるUPDATE（ソフトデリート等）」は直接のテーブルUPDATEでは実現できない。** PostgreSQLのRLSは、UPDATE時に更新後の新しい行がSELECTポリシーからも見える状態であることを暗黙的に要求するため、「`deleted_at`を設定して見えなくする」という論理削除の目的自体がこの暗黙チェックと構造的に衝突する。SECURITY DEFINER関数（RPC）で明示的に権限チェックしてから更新する
 - **自己参照的なRLS更新（例：オーナーが自分自身の`role`をowner→memberに書き換える）は、`WITH CHECK`の再評価時点で権限を失いchicken-and-egg的に失敗する。** 素のテーブルUPDATEでは実現不可能なため、RLSを完全にバイパスするSECURITY DEFINER RPCが必要
+- **オーナー限定の単一カラム更新でも、更新対象が呼び出し者自身のRLS判定条件（例：`is_room_owner`が参照する`role`列）に影響しないなら、既存のUPDATE系ポリシーへ素のテーブル操作を乗せるだけで足りる。** 新規RPCが必要かどうかの分岐点は「オーナーかどうか」ではなく「更新対象が判定条件そのものを書き換えるか」（実例：`rooms.name`/`avatar_url`の更新は`rooms_update_owner`ポリシーだけで完結したが、`room_members.role`の自己書き換えは上記の理由でRPCが必須だった）
 - `room_members`など自己参照的なRLSで無限再帰を避けるため、`is_room_member()`/`is_room_owner()`/`is_blocked()`のようなSECURITY DEFINERヘルパー関数を切り出す
 - RLSポリシーの`WITH CHECK (true)`はAdvisorに警告される。`WITH CHECK (auth.uid() is not null)`のように明示的に書く
 - `get_advisors`の結果は数分キャッシュされることがある
@@ -39,6 +40,17 @@ Phase横断で繰り返し関係してくる技術的な落とし穴・確定し
 - 署名対象パラメータは`folder`と`timestamp`のみ（キー昇順→`key=value`を`&`連結→`api_secret`を末尾連結→SHA1）
 - アニメーションGIFはCloudinary変換時に`fl_animated`を付けないとデフォルトで先頭フレームのみ配信される（先頭フレームが空白/透明なGIFだと「何も表示されない」ように見える）。canvas再圧縮もアニメーションを壊すため、GIFはバリデーションのみ通して元ファイルをそのままアップロードする
 - next/image（Vercelの画像最適化API）は不採用。CloudinaryのURLに`f_auto,q_auto`を付けるだけで最適化できるため、併用すると二重変換になりVercel無料プランの画像最適化回数を無駄に消費する
+
+## React（開発時Strict Mode）とrefガードの罠
+
+- **「アンマウント後にsetStateしない」ための`isMountedRef`パターンは、cleanupだけでなくeffect本体（setup）でも明示的に`true`へ戻さないと、開発時Strict Modeで恒久的に壊れる。** Next.js（React 18以降既定）の開発時Strict Modeは初回マウント直後に「マウント→アンマウント→再マウント」という合成サイクルを1回走らせる。`useEffect(() => { return () => { ref.current = false } }, [])`のようにcleanupしか無いeffectは、この合成アンマウントで`false`になった後、続く合成再マウントでは戻す処理が無いため**実際には正常に表示され続けている画面でも、このrefは開発時は永久に`false`のまま**になる。それを参照する`if (!ref.current) return;`系のガードは、本来必要な処理（例：送信中フラグのリセット）に一度も到達できなくなる。**setup側にも`ref.current = true`を明示的に書く**のが正しい実装（実例：`components/chat/ChatRoom.tsx`の送信処理が「送信中」のまま固まる不具合、詳細は`docs/phases/phase-24-group-chat-m4.md`）。本番ビルドではStrict Modeの開発時二重実行が無いため症状が出ない可能性があり、`next dev`だけで検証していても再現しないケースとの取り違えに注意
+- **バグ調査で「コンソールに一切エラーが出ないまま特定のUI操作だけが固まる」場合、まず疑うべきは（a）そもそも解決していないPromiseを待ち続けている、（b）解決はしているが後続のstate更新ガード（マウント判定・多重実行防止フラグ等）で早期returnしている、の2択。** 例外系のバグは大抵Uncaught/Unhandled Rejectionとしてコンソールに出るため、それが無いことは「その先で例外は起きていない」ことの強い手がかりになる。今回は最初(a)を疑って外れ、(b)が正解だった。Playwrightでネットワークの`request`/`response`イベントを監視し「サーバー側は成功で返っているのにUIが更新されない」ことを一次証拠で確認できれば(b)側に絞り込める
+- ホットパス（Route Handlerを経由せずSupabaseクライアントを直接呼ぶ設計）は、サーバーレス関数のタイムアウトに守られないぶん、呼び出し側で`.abortSignal(AbortSignal.timeout(ms))`を検討する価値はある（`components/chat/ChatRoom.tsx`の`insertMessageWithRetry`に残置）。ただし今回の「送信中のまま固まる」不具合の根本原因はこれではなく、上記のrefガードの罠だった（一度この仮説で外した経緯も`docs/phases/phase-24-group-chat-m4.md`に記録）。このプロジェクトで使っている`postgrest-js`のバージョンでは、`.abortSignal()`によるタイムアウトは例外throwではなく通常の`{data: null, error: {...}}`という戻り値になることをNode スクリプトで確認済み
+
+## ヘッドレスブラウザでの実地再現（sudoが使えない環境）
+
+- **`playwright install chromium`はsudo不要でブラウザ本体を取得できるが、実行に必要な共有ライブラリ（`libnspr4.so`/`libnss3.so`/`libasound.so.2`等）が無いと起動できない。** `playwright install --with-deps`（内部で`apt-get install`）はsudoが要るため使えない環境向けの代替：`apt-get download <パッケージ名>`（ダウンロードのみでsudo不要）で`.deb`を取得し、`dpkg-deb -x <deb> <展開先ディレクトリ>`でシステムには一切インストールせずローカルに展開、起動時に`LD_LIBRARY_PATH=<展開先>/usr/lib/x86_64-linux-gnu`を設定して読み込ませればよい。`ldd <バイナリ>`で不足ライブラリを事前に特定してから対象を絞る
+- ブラウザ経由のE2E的な検証（実際にsignupフォームからアカウントを作る等）で作られたデータはSupabase上に本物として永続化される。使い捨てAdmin API直接作成（`admin.auth.admin.createUser`→検証後`admin.auth.admin.deleteUser`）と違い、**検証後に作成したユーザーID・ルームIDを明示的に特定して削除する後片付けが必要**（`rooms`は`room_members`が全員削除されても連動削除されないため、孤立ルームの掃除も忘れずに）
 
 ## セキュリティゲート設計（AuthGate等）
 

@@ -39,6 +39,9 @@ const MESSAGE_MAX_LENGTH = 4000;
 // 初回送信+自動リトライ3回＝計4回試行し、リトライ毎に指数バックオフで待機する。
 const MAX_AUTO_RETRIES = 3;
 const RETRY_BACKOFF_MS = [1000, 2000, 4000];
+// 実機フィードバックで判明した「送信中のまま固まる」バグの修正：1試行あたりの
+// ネットワーク待ち上限（詳細はinsertMessageWithRetryのコメント参照）。
+const SEND_ATTEMPT_TIMEOUT_MS = 10000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -233,7 +236,21 @@ export function ChatRoom({
 
   // Phase 14: 自動リトライの指数バックオフ待機中に別ルームへ遷移する等でアンマウントされた場合、
   // その後に解決したPromiseがsetStateを呼ばないようにするためのガード。
+  //
+  // 実機フィードバックで判明した「送信中のまま固まる」バグの真因（Phase 24）：
+  // このeffectがcleanupのみでsetup本体を持たなかったため、React（開発時のStrict Mode）が
+  // 初回マウント直後に行う「マウント→アンマウント→再マウント」の合成サイクルで、
+  // cleanupが1回実行されisMountedRef.currentがfalseになった後、それをtrueへ戻す処理が
+  // どこにも無かった。結果としてこのrefは実際にはマウントされ続けている画面でも
+  // 開発時は常にfalseのままになり、sendMessage()内の`if (!isMountedRef.current) return;`が
+  // 毎回早期returnしてsetSending(false)に到達できず、送信ボタンが永久に「送信中...」の
+  // まま固まっていた（メッセージ自体はRealtime購読側のsetMessagesで正常に届いて
+  // 見えていたため、一見「送信は成功しているのにボタンだけ戻らない」ように見えていた）。
+  // 修正：effect本体でも明示的にtrueへ戻すことで、Strict Modeの合成再マウント後も
+  // 正しい状態に復帰させる（本番ビルドではStrict Modeの二重実行が無いため実害は無かった
+  // はずだが、`next dev`で常時再現するため開発体験として致命的だった）。
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
     };
@@ -346,35 +363,55 @@ export function ChatRoom({
   // 同一payload.idを使い回すため、途中の試行が実はDB側で成功していた（タイムアウト等で
   // クライアントが誤って失敗と判定した）場合は一意制約違反（23505）として検出でき、
   // その場合は該当行を取得して成功扱いにする（二重送信の防止）。
+  //
+  // 実機フィードバックで判明したバグの修正：この関数は元々try/catchを一切持たず、
+  // かつSupabaseクライアントのfetchにタイムアウトを設定していなかった。ネットワークが
+  // 一瞬詰まってfetchが解決も拒否もしないまま止まる（ブラウザ/OS側のTCPタイムアウトは
+  // 数分〜無期限になりうる）と、このawaitが永久に返らず、呼び出し元sendMessage()の
+  // setSending(false)（成功/失敗どちらの経路にも到達できない）が実行されないまま
+  // 「送信中...」ボタンが固まり続けていた（コンソールにエラーは出ない＝Promiseが
+  // 例外を投げたのではなく単に未解決のまま止まっていたことと整合する）。
+  // .abortSignal(AbortSignal.timeout(...))で1試行あたりの上限を設け、かつtry/catchで
+  // 例外（AbortError含む）も通常のerror扱いにフォールバックさせることで、
+  // ネットワークが本当に詰まっていても最終的には手動再試行バナー（handleRetrySend）に
+  // 必ず合流できるようにする。
   async function insertMessageWithRetry(
     payload: PendingMessagePayload,
   ): Promise<{ data: MessageRow | null; error: boolean }> {
     for (let attempt = 0; attempt <= MAX_AUTO_RETRIES; attempt++) {
-      const { data, error } = await supabase
-        .from("messages")
-        .insert({
-          id: payload.id,
-          room_id: roomId,
-          sender_id: currentUserId,
-          content: payload.content,
-          image_url: payload.image_url,
-        })
-        .select()
-        .single();
-
-      if (!error && data) {
-        return { data, error: false };
-      }
-
-      if (error?.code === "23505") {
-        const { data: existing } = await supabase
+      try {
+        const { data, error } = await supabase
           .from("messages")
-          .select("*")
-          .eq("id", payload.id)
-          .maybeSingle();
-        if (existing) {
-          return { data: existing, error: false };
+          .insert({
+            id: payload.id,
+            room_id: roomId,
+            sender_id: currentUserId,
+            content: payload.content,
+            image_url: payload.image_url,
+          })
+          .select()
+          .abortSignal(AbortSignal.timeout(SEND_ATTEMPT_TIMEOUT_MS))
+          .single();
+
+        if (!error && data) {
+          return { data, error: false };
         }
+
+        if (error?.code === "23505") {
+          const { data: existing } = await supabase
+            .from("messages")
+            .select("*")
+            .eq("id", payload.id)
+            .abortSignal(AbortSignal.timeout(SEND_ATTEMPT_TIMEOUT_MS))
+            .maybeSingle();
+          if (existing) {
+            return { data: existing, error: false };
+          }
+        }
+      } catch {
+        // タイムアウト（AbortError）・その他の予期しない例外も、通常のerror扱いとして
+        // 下の再試行ループへ合流させる（例外を外へ漏らさない＝sendMessage側の
+        // setSending(false)に必ず到達させるための防御）。
       }
 
       if (attempt < MAX_AUTO_RETRIES) {
