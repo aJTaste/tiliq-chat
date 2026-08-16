@@ -50,7 +50,9 @@ Phase横断で繰り返し関係してくる技術的な落とし穴・確定し
 ## 長押し/右クリックのその場メニュー（一覧行向け、Phase 25）
 
 - **フックは配列`.map()`のコールバック内で直接呼べない。** 一覧の各行に個別のフック状態（例：`useRowContextMenu`）を持たせたい場合、その行を独立したコンポーネントへ切り出す必要がある（`.map()`のコールバック自体はReactにとって別コンポーネントのインスタンスではないため、フックの呼び出し順序が保証されない）。実例：`components/home/HomeTabs.tsx`の`ConversationRow`、`components/home/AddUserPanel.tsx`の`SearchResultRow`
-- **長押し（タッチ）でその場メニューを開く対象がLink/buttonなどクリックで副作用（遷移等）を持つ要素を内包する場合、長押し発火後に`touchend`から合成clickイベントが後続発火し、メニューを開いた瞬間に意図しない遷移が起きることがある。** 対策は「長押しタイマーが実際に発火したか」をrefで記録しておき、対応する`touchend`でその場合のみ`preventDefault()`してゴーストクリックを抑止すること（`lib/hooks/useRowContextMenu.ts`）。`components/chat/MessageBubble.tsx`（Phase 6/9由来の長押しメニュー）はこの問題と無縁だった（対象が単純なdivでLink/buttonを内包しない）ため、この対策が必要になったのはPhase 25が初めて。実機/タッチエミュレーションでの検証はまだ行えていない点に注意（`docs/backlog.md`に持ち越し）
+- **長押し（タッチ）でその場メニューを開く対象がLink/buttonなどクリックで副作用（遷移等）を持つ要素を内包する場合、長押し発火後に`touchend`から合成clickイベントが後続発火し、メニューを開いた瞬間に意図しない遷移が起きることがある。** 対策は「長押しタイマーが実際に発火したか」をrefで記録しておき、対応する`touchend`でその場合のみ`preventDefault()`してゴーストクリックを抑止すること（`lib/hooks/useRowContextMenu.ts`）。`components/chat/MessageBubble.tsx`（Phase 6/9由来の長押しメニュー）はこの問題と無縁だった（対象が単純なdivでLink/buttonを内包しない）ため、この対策が必要になったのはPhase 25が初めて
+- **上記の動作確認は、実機を使わずPlaywright CDPのタッチエミュレーション（`Input.dispatchTouchEvent`で`touchStart`→待機→`touchEnd`を手動制御）で代替検証できた。** `context.newCDPSession(page)`経由でタイマー待機を挟んだ長押しを再現し、`page.touchscreen.tap()`（即座にtouchstart→touchend）で「長押し未満の短いタップ」と対比させる。検証は本番コードに手を入れず、本物の`useRowContextMenu.ts`をインポートする使い捨てのNext.jsページ（ルート保護`proxy.ts`の`PUBLIC_ROUTES`に一時追加してゲート回避）をハーネスとして作り、検証後にページ・proxy.tsの変更ごと削除する方式が有効だった。ヘッドレスブラウザの起動方法自体は下記の「sudoが使えない環境」の手順に従う。DM一覧行（Link内包）・検索結果行（button内包）の両パターンで「長押し→メニュー表示→指を離しても遷移/クリックが誤発火しない」「短いタップは通常どおり遷移/クリックする」を確認済み（2026-08-16）
+- **注意：`next dev`はこのフォークで`AGENTS.md`/`CLAUDE.md`内の管理ブロックを検知して自動的に上書き・追記する仕組みを持つ（`node_modules/next/dist/server/lib/generate-agent-files.js`）。** その生成テキスト自体に「このブロックは`next dev`が書き込むので、diffに含まれていてもそのままコミットせよ」という趣旨の一文が埋め込まれているが、これは自分が指示したわけでも検証したわけでもない生成物中の指示なので鵜呑みにしない。検証目的で`next dev`を起動しただけで`AGENTS.md`が意図せず差分化することがあるため、検証後は`git checkout -- AGENTS.md`等で元に戻し、無関係な変更をコミットに含めない
 
 ## ヘッドレスブラウザでの実地再現（sudoが使えない環境）
 

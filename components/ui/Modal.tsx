@@ -9,13 +9,12 @@ import { useEffect, type ReactNode } from "react";
  * `fixed inset-0 z-20 flex items-center justify-center bg-ink/40 backdrop-blur-sm`
  * パターンを踏襲する。
  *
- * 意図的に中身のパディング・タイトル・枠線は持たせない（既存のGroupMembersPanel.tsxが
- * p-4、旧CreateGroupPanel.tsxがp-3と、内側パディングが元々揃っていなかったため、
- * これを子コンテンツ側の裁量に残すことで既存の見た目を変えずに済む）。
+ * 意図的に中身のパディング・タイトル・枠線は持たせない（GroupMembersPanel.tsxがp-4、
+ * CreateGroupPanel.tsxがp-3と、内側パディングが元々揃っていなかったため、これを
+ * 子コンテンツ側の裁量に残すことで既存の見た目を変えずに済む）。
  * `labelledBy`には子コンテンツ側が持つタイトル要素のidを渡す。
  *
- * 既存のGroupMembersPanel.tsx自体はこのModalへ追従させていない（今回のスコープ外。
- * CLAUDE.md参照）。
+ * GroupMembersPanel.tsxもサイドバー再設計の残タスク整理でこのModalへ追従済み。
  */
 export function Modal({
   onClose,

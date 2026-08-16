@@ -19,6 +19,7 @@ import {
   ImageValidationError,
 } from "@/lib/images/compress";
 import { uploadImageToCloudinary, ImageUploadError } from "@/lib/cloudinary/upload";
+import { Modal } from "@/components/ui/Modal";
 
 type GroupMember = {
   id: string;
@@ -51,6 +52,9 @@ const GROUP_NAME_MAX_LENGTH = 50;
  * Phase 24: グループ名・アバター編集（グループ設定セクション）を追加。画像選択は
  * ChatRoom.tsxのselectedFile/previewUrlと同じ「選択直後はアップロードせずプレビューのみ、
  * 保存ボタン押下時に初めてcompressImage→uploadImageToCloudinaryする」ステージング方式。
+ * サイドバー再設計の残タスク：`components/ui/Modal.tsx`へ追従（背景クリック・Escapeキーの
+ * onClose呼び出しをModal側に委譲）。内側のパディング・タイトル行はModal導入前の見た目を
+ * 変えないためそのままこのファイル側に残す（Modal.tsxのコメント参照）。
  */
 export function GroupMembersPanel({
   roomId,
@@ -365,16 +369,13 @@ export function GroupMembersPanel({
   const displayAvatarUrl = stagedAvatarPreviewUrl ?? avatarUrl;
 
   return (
-    <div
-      className="fixed inset-0 z-20 flex items-center justify-center bg-ink/40 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="flex w-full max-w-sm flex-col gap-3 rounded-lg border border-band bg-surface-raised p-4"
-      >
+    <Modal onClose={onClose} labelledBy="group-members-title">
+      <div className="flex flex-col gap-3 rounded-lg border border-band bg-surface-raised p-4">
         <div className="flex items-center justify-between">
-          <p className="font-display text-sm font-semibold text-ink">
+          <p
+            id="group-members-title"
+            className="font-display text-sm font-semibold text-ink"
+          >
             メンバー一覧
           </p>
           <button
@@ -603,6 +604,6 @@ export function GroupMembersPanel({
           </p>
         )}
       </div>
-    </div>
+    </Modal>
   );
 }
