@@ -136,6 +136,7 @@ Supabaseダッシュボードの操作上の注意点（Realtimeパブリケー�
 | 26    | プロフィール編集機能（表示名・アバター画像。設定画面に追加、DBスキーマ変更なし）。実機未検証のまま次回に持ち越し | 完了（実機確認待ち） | [phase-26](docs/phases/phase-26-profile-editing.md) |
 | 27    | スクロールバーの見た目調整（`app/globals.css`のみ、ブランドトーンに統一）。実機未検証のまま次回に持ち越し | 完了（実機確認待ち） | [phase-27](docs/phases/phase-27-scrollbar-styling.md) |
 | 28    | 一時チャットの名前付け（作成時のみ。`rooms.name`を流用、DBマイグレーションあり）。実機未検証のまま次回に持ち越し | 完了（実機確認待ち） | [phase-28](docs/phases/phase-28-temp-chat-naming.md) |
+| 29    | 既読機能（FR-25追加。DM常時ON・グループはオーナーがON/OFF切替可、既読件数表示。`mark_room_read` RPC＋DBマイグレーションあり）。実機未検証のまま次回に持ち越し | 完了（実機確認待ち） | [phase-29](docs/phases/phase-29-read-receipts.md) |
 
 次にやることは `docs/backlog.md` を参照。
 
