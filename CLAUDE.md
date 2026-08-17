@@ -138,6 +138,7 @@ Supabaseダッシュボードの操作上の注意点（Realtimeパブリケー�
 | 28    | 一時チャットの名前付け（作成時のみ。`rooms.name`を流用、DBマイグレーションあり）。実機未検証のまま次回に持ち越し | 完了（実機確認待ち） | [phase-28](docs/phases/phase-28-temp-chat-naming.md) |
 | 29    | 既読機能（FR-25追加。DM常時ON・グループはオーナーがON/OFF切替可、既読件数表示。`mark_room_read` RPC＋DBマイグレーションあり）。実機未検証のまま次回に持ち越し | 完了（実機確認待ち） | [phase-29](docs/phases/phase-29-read-receipts.md) |
 | 30    | 一時チャットの作成後リネーム（DBマイグレーションなし、既存`rooms_update_owner`ポリシーで完結）。実機未検証のまま次回に持ち越し | 完了（実機確認待ち） | [phase-30](docs/phases/phase-30-temp-chat-rename.md) |
+| 31    | サイドバー会話一覧への既読状態反映（DBマイグレーションあり）。あわせてPhase 26〜30をコード/DBレベルで検証（不具合なし、UIの実機確認は持ち越し）。Claude Code利用中断前の最終セッション | 完了（実機確認待ち） | [phase-31](docs/phases/phase-31-sidebar-read-receipts.md) |
 
 次にやることは `docs/backlog.md` を参照。
 
