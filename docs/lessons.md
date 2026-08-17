@@ -36,6 +36,11 @@ Phase横断で繰り返し関係してくる技術的な落とし穴・確定し
 - `supabase_realtime_messages_publication`という紛らわしい名前のパブリケーションは`realtime.messages`（Presence/Broadcast用システムテーブル）向けで、アプリの`public.messages`とは無関係。誤って触らない
 - RLSが有効なテーブルの`postgres_changes`購読は、読み取りを許可されたクライアントにのみ配信される。`filter:`（1カラムの等価条件のみ、OR不可）に頼らずRLSに絞り込みを任せられるケースが多い
 
+## Supabase JSクライアント（postgrest-js）の「fire-and-forget」の罠
+
+- **`void supabase.rpc(...)` / `void supabase.from(...).update(...)`のように、結果を待たない「発火して忘れる」呼び出しのつもりで`void`だけを付けると、実際にはHTTPリクエストが一切送信されない。** `@supabase/postgrest-js`のクエリビルダー（`PostgrestBuilder`）はPromiseそのものではなくthenable（`.then()`を実装したオブジェクト）で、実際のfetch実行は`.then()`の呼び出しの中で遅延的にトリガーされる設計になっている。`void`演算子は式を評価して結果を捨てるだけで`.then()`を呼ばないため、`await`も`.then()`も`.catch()`も一切連鎖させないと、ビルダーオブジェクトが構築されただけでリクエストは永遠に発火しない（例外も出ない。ネットワークタブに何も現れない）。エラーを無視した「発火だけしたい」呼び出しは`void supabase.rpc(...).then(() => {})`のように明示的に`.then()`を呼ぶか、`await`する（`try/catch`で握りつぶす）必要がある
+- **この不具合はコンソールにもネットワークタブにも痕跡を残さないため、「例外は出ないがDBに反映されない」系の不具合を疑うときの新しい候補として、上記「React（開発時Strict Mode）とrefガードの罠」の(a)(b)の2択に加えて「(c) `void`だけで`.then()`未呼び出しのため、そもそもリクエストが発火していない」を追加で疑う**（実例：`components/chat/ChatRoom.tsx`の既読機能`mark_room_read`呼び出し2箇所。Phase 29〜31のDBレベル検証（RLS/RPCをSQL側で直接叩くrollbackトランザクション）ではこの不具合を検出できず、「不具合なし」と誤って結論していた。実機のブラウザ操作で初めて発覚し、原因特定にはPlaywrightで実際にHTTPリクエストの発生有無をネットワークレベルで観測する検証が有効だった。**DBレベルのRLS/RPC検証だけでは「アプリのJSコードが実際にそのRPCを呼び出しているか」自体は検証できない**、という限界がこの実例で明確になった）
+
 ## Cloudinary / 画像
 
 - アップロードはブラウザ→Cloudinaryへ直接（署名付き）。Route Handlerは署名生成のみを担当し、画像本体は経由させない（Vercelサーバーレス関数のボディ上限・実行時間制約を回避）

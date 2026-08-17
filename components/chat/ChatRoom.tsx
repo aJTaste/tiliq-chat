@@ -332,7 +332,13 @@ export function ChatRoom({
           // Phase 29: 既読機能。チャットを開いている間に届いた新着メッセージは
           // 即座に「読んだ」ものとして扱う（LINE等の一般的なチャットアプリと同じ挙動）。
           // 失敗しても致命的ではないベストエフォート機能のため、エラーは無視する。
-          void supabase.rpc("mark_room_read", { p_room_id: roomId });
+          // 実機検証で判明したバグ修正：postgrest-jsのビルダーは`.then()`を呼ぶ（=await
+          // する）までリクエスト自体を送信しない遅延実行の仕組みのため、`void`だけで
+          // discardすると実際にはHTTPリクエストが一切発火しない（既読が永久に更新
+          // されない不具合になっていた）。`.then()`を明示的に呼んで発火させる。
+          void supabase
+            .rpc("mark_room_read", { p_room_id: roomId })
+            .then(() => {});
         },
       )
       .on(
@@ -382,8 +388,10 @@ export function ChatRoom({
 
   // Phase 29: 既読機能。このチャットを開いた（roomIdが変わった）タイミングで
   // 自分の閲覧位置を更新する。ベストエフォートのためエラーは無視する。
+  // 実機検証で判明したバグ修正：`.then()`を呼ばないとリクエストが発火しないため
+  // （詳細は上のRealtime購読内コメント参照）、`.then()`を明示的に呼ぶ。
   useEffect(() => {
-    void supabase.rpc("mark_room_read", { p_room_id: roomId });
+    void supabase.rpc("mark_room_read", { p_room_id: roomId }).then(() => {});
   }, [roomId, supabase]);
 
   async function loadOlderMessages() {
