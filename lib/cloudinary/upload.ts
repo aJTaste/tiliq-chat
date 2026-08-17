@@ -71,3 +71,52 @@ export async function uploadImageToCloudinary(
 
   return data.secure_url;
 }
+
+async function fetchAvatarUploadSignature(): Promise<SignResponse> {
+  const res = await fetch("/api/cloudinary/sign-avatar", { method: "POST" });
+
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as SignErrorBody | null;
+    throw new ImageUploadError(
+      body?.error?.message ?? "画像アップロードの準備に失敗しました。",
+    );
+  }
+
+  return res.json() as Promise<SignResponse>;
+}
+
+/**
+ * Phase 26: プロフィールアバター画像を`/api/cloudinary/sign-avatar`経由でアップロードする。
+ * roomIdに紐づくフォルダ検証が不要な点以外は`uploadImageToCloudinary`と同じ流れ。
+ */
+export async function uploadAvatarToCloudinary(
+  blob: Blob,
+  filename: string,
+): Promise<string> {
+  const { cloudName, apiKey, timestamp, signature, folder } =
+    await fetchAvatarUploadSignature();
+
+  const formData = new FormData();
+  formData.append("file", blob, filename);
+  formData.append("api_key", apiKey);
+  formData.append("timestamp", String(timestamp));
+  formData.append("signature", signature);
+  formData.append("folder", folder);
+
+  const uploadRes = await fetch(
+    `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+    { method: "POST", body: formData },
+  );
+
+  if (!uploadRes.ok) {
+    throw new ImageUploadError("画像のアップロードに失敗しました。");
+  }
+
+  const data = (await uploadRes.json()) as { secure_url?: unknown };
+
+  if (typeof data.secure_url !== "string") {
+    throw new ImageUploadError("画像のアップロードに失敗しました。");
+  }
+
+  return data.secure_url;
+}

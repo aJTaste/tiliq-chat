@@ -95,6 +95,44 @@ export async function updateAuthScopeLaunch(
 }
 
 /**
+ * Phase 26: プロフィール編集（表示名・アバター画像）。`profiles.avatar_url`列は
+ * Phase 1から存在するが編集UIが無かった（バックログ由来）。username（ユーザーID）は
+ * 一意制約付きのID的な扱いのため対象外とし、display_name/avatar_urlのみ更新する。
+ * profiles_update_ownのRLS（id = auth.uid()）は判定条件そのものへの影響が無い単純な
+ * 自己更新のため、docs/lessons.mdの分岐に従い専用RPCは不要（素のUPDATEで足りる）。
+ */
+export async function updateProfile(input: {
+  displayName: string;
+  avatarUrl: string | null;
+}): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const displayName = input.displayName.trim();
+  if (displayName.length < 1 || displayName.length > 30) {
+    return { success: false, error: "表示名は1〜30文字で入力してください。" };
+  }
+
+  const { error } = await supabase
+    .from("profiles")
+    .update({ display_name: displayName, avatar_url: input.avatarUrl })
+    .eq("id", user.id);
+
+  if (error) {
+    return { success: false, error: "プロフィールの更新に失敗しました。" };
+  }
+
+  revalidatePath("/settings");
+  return { success: true };
+}
+
+/**
  * FR-20: 追加認証を非表示メッセージ一覧の閲覧時にも要求するかのトグル。
  */
 export async function updateAuthScopeHiddenList(
