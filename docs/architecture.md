@@ -13,7 +13,7 @@ tiliq-chat/
 │   ├── globals.css              # デザイントークン・Tailwind v4設定
 │   ├── favicon.ico
 │   ├── api/
-│   │   └── cloudinary/sign/route.ts   # Cloudinary署名発行
+│   │   └── cloudinary/{sign,sign-avatar}/route.ts   # Cloudinary署名発行（チャット添付画像/グループアバター用・プロフィールアバター用で分離）
 │   ├── login/page.tsx
 │   ├── signup/page.tsx
 │   ├── settings/page.tsx        # 追加認証・通知・DM受信設定画面（永続サイドバーシェルには含まれない独立ページ）
@@ -31,7 +31,7 @@ tiliq-chat/
 │       ├── friends.ts           # フレンド申請系
 │       ├── blocks.ts            # ブロック系
 │       ├── messages.ts          # deleteMessage/hideMessage/unhideMessage
-│       └── settings.ts          # 各種user_settings更新
+│       └── settings.ts          # 各種user_settings更新・プロフィール（表示名・アバター）更新
 ├── lib/
 │   ├── supabase/{client,server,admin}.ts
 │   ├── cloudinary/{sign,upload,url}.ts
@@ -41,7 +41,7 @@ tiliq-chat/
 ├── components/
 │   ├── TiliquaMark.tsx
 │   ├── auth/AuthGate.tsx        # 追加認証の共通ゲート（起動時／各チャット／非表示一覧の3スコープで共用）
-│   ├── settings/{AuthSettingsForm,NotificationSettingsForm}.tsx
+│   ├── settings/{AuthSettingsForm,NotificationSettingsForm,ProfileSettingsForm}.tsx
 │   ├── pwa/{ServiceWorkerRegistrar,OfflineBanner,InstallPrompt}.tsx
 │   ├── ui/Modal.tsx              # 汎用モーダルラッパー（CreateGroupPanel・CreateTempChatPanelが使用。GroupMembersPanelは未追従）
 │   ├── shell/                    # 永続サイドバーシェル本体
