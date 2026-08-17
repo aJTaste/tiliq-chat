@@ -134,6 +134,7 @@ Supabaseダッシュボードの操作上の注意点（Realtimeパブリケー�
 | 24    | グループチャットM4（グループ名変更・アバター設定）・メッセージ送信が「送信中」のまま固まるバグの修正 | 完了 | [phase-24](docs/phases/phase-24-group-chat-m4.md) |
 | 25    | チャット画面からその場で一時チャットを作成できる機能（既存DM相手でも複数作成可・一覧の一時チャットフィルタ・一覧/検索の右クリックメニュー） | 完了 | [phase-25](docs/phases/phase-25-temp-chat-quick-create.md) |
 | 26    | プロフィール編集機能（表示名・アバター画像。設定画面に追加、DBスキーマ変更なし）。実機未検証のまま次回に持ち越し | 完了（実機確認待ち） | [phase-26](docs/phases/phase-26-profile-editing.md) |
+| 27    | スクロールバーの見た目調整（`app/globals.css`のみ、ブランドトーンに統一）。実機未検証のまま次回に持ち越し | 完了（実機確認待ち） | [phase-27](docs/phases/phase-27-scrollbar-styling.md) |
 
 次にやることは `docs/backlog.md` を参照。
 
