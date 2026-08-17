@@ -100,6 +100,7 @@ export default async function ShellLayout({
       lastMessageAt: row.last_message_at ?? null,
       isTemporary: row.is_temporary ?? false,
       expiresAt: row.expires_at ?? null,
+      roomName: row.room_name ?? null,
     }),
   );
 

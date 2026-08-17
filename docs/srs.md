@@ -347,7 +347,8 @@ User
 
 Room
 ├── id           : UUID PRIMARY KEY DEFAULT gen_random_uuid()
-├── name         : TEXT（グループ名。1対1はNULL可）
+├── name         : TEXT（グループ名。1対1はNULL可。Phase 28以降、一時チャットの
+│                  カスタム名にも流用。詳細は本セクション末尾の注記参照）
 ├── is_group     : BOOLEAN NOT NULL DEFAULT false
 ├── is_temporary : BOOLEAN NOT NULL DEFAULT false
 ├── expires_at   : TIMESTAMPTZ（一時チャットの有効期限。NULLなら期限なし。最大90日）
@@ -365,6 +366,12 @@ RoomMember.auth_required（自分の行のみのトグル）＋ User.auth_type/a
 相手には影響しない）」という個人・端末単位の防御だったため。lock_type/lock_secret列は
 将来のグループ単位の共有ロック等の用途を見込んで削除はせず残しているが、現在の実装では
 参照されていない。
+
+※ nameの一時チャットへの流用について（Phase 28で追加）：バックログ「一時チャットに
+名前を付けたい」に対応するため、グループ名専用だったRoom.nameを一時チャットにも流用
+した（新規カラムは追加していない）。作成時（`create_temp_dm_room`のp_name引数）のみ
+設定可能で、作成後のリネームは未対応。設定時はサイドバー一覧・チャットヘッダーで
+相手の実名より優先して表示され、実名は@usernameと並べてサブテキストとして残す。
 
 RoomMember
 ├── id            : UUID PRIMARY KEY DEFAULT gen_random_uuid()

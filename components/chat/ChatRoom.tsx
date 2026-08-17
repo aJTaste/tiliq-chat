@@ -94,6 +94,8 @@ function formatDateDividerLabel(iso: string) {
 // Phase 21: グループメンバー管理M2。membersに自分を含む全メンバー（role付き）を
 // 持たせるよう変更した（メンバー管理パネルで「自分がオーナーか」「誰がオーナーか」を
 // 判定する必要があるため）。memberCountはmembers.lengthで代替できるため削除した。
+// Phase 28: 一時チャットの名前付け。roomNameが設定されていればDMヘッダー・一覧の
+// 表示名を上書きする（相手の実名displayNameはサブテキストとして残し、識別性を保つ）。
 export type ChatPeer =
   | {
       kind: "dm";
@@ -101,6 +103,7 @@ export type ChatPeer =
       username: string;
       displayName: string;
       avatarUrl: string | null;
+      roomName: string | null;
     }
   | {
       kind: "group";
@@ -639,15 +642,18 @@ export function ChatRoom({
         </Link>
         {peer.kind === "dm" ? (
           <>
+            {/* Phase 28: アバターの頭文字は常に相手の実名（peer.displayName）基準のまま
+                （チャット名で上書きすると「誰との会話か」が視覚的に分からなくなるため）。
+                タイトルはroomName優先、設定時は実名を@usernameと並べてサブテキストに残す。 */}
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
               {peer.displayName.slice(0, 1)}
             </div>
             <div className="min-w-0">
               <p className="truncate font-medium text-ink">
-                {peer.displayName}
+                {peer.roomName ?? peer.displayName}
               </p>
               <p className="truncate text-xs text-ink-muted">
-                @{peer.username}
+                {peer.roomName ? `${peer.displayName} · ` : ""}@{peer.username}
               </p>
             </div>
           </>

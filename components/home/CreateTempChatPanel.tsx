@@ -19,6 +19,10 @@ type SearchResult = {
 };
 
 const SEARCH_DEBOUNCE_MS = 300;
+// Phase 28: app/actions/rooms.tsのTEMP_CHAT_NAME_MAX_LENGTHと揃える
+// （Server Action側は非公開定数のためUI側で個別に定義。GroupMembersPanel.tsx等
+// 既存コードの「2箇所での定数複製」方針を踏襲）。
+const TEMP_CHAT_NAME_MAX_LENGTH = 50;
 
 /**
  * サイドバーUI再設計：「＋」新規作成メニューから開く一時チャット作成モーダル。
@@ -38,6 +42,7 @@ export function CreateTempChatPanel({ onClose }: { onClose: () => void }) {
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<SearchResult | null>(null);
+  const [name, setName] = useState("");
   const [duration, setDuration] = useState<TempDmDurationOption>("10m");
   const [customAmount, setCustomAmount] = useState("");
   const [customUnit, setCustomUnit] = useState<"minutes" | "hours" | "days">(
@@ -106,6 +111,7 @@ export function CreateTempChatPanel({ onClose }: { onClose: () => void }) {
           duration === "custom"
             ? { amount: Number(customAmount), unit: customUnit }
             : undefined,
+          name,
         );
         if (result?.error) {
           setError(result.error);
@@ -207,6 +213,18 @@ export function CreateTempChatPanel({ onClose }: { onClose: () => void }) {
             )}
           </>
         )}
+
+        {/* Phase 28: チャット名（任意）。一覧・チャット画面での表示名を上書きする
+            バックログ「一時チャットに名前を付けたい」対応。作成時のみ設定可能。 */}
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="チャット名（任意）"
+          aria-label="一時チャットの名前"
+          maxLength={TEMP_CHAT_NAME_MAX_LENGTH}
+          className="w-full rounded-lg border border-band bg-surface px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+        />
 
         <TempChatDurationField
           duration={duration}

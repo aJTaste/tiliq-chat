@@ -17,6 +17,12 @@ function mapDmError(message: string): string {
   if (message.includes("blocked")) {
     return "ブロック関係にあるためDMを開始できません。";
   }
+  // Phase 28: 一時チャットの名前付け。create_temp_dm_room RPCが投げる
+  // 'chat name too long'をここでまとめて日本語化する（mapDmErrorはDM系RPC共通のエラー
+  // マッパーのため、create_temp_dm_room固有のメッセージもここに追加する）。
+  if (message.includes("chat name too long")) {
+    return "チャット名は50文字以内で入力してください。";
+  }
   return "DMの開始に失敗しました。時間をおいて再度お試しください。";
 }
 
@@ -159,14 +165,22 @@ const CUSTOM_UNIT_MS: Record<"minutes" | "hours" | "days", number> = {
 
 const MAX_CUSTOM_DURATION_MS = 90 * 24 * 60 * 60 * 1000;
 
+// Phase 28: 一時チャットの名前付け。create_group_room側のGROUP_NAME_MAX_LENGTH（50）と
+// 揃えた上限。create_temp_dm_room RPC側の'chat name too long'チェックと一致させる。
+const TEMP_CHAT_NAME_MAX_LENGTH = 50;
+
 /**
  * FR-10/3.7: 有効期限付きの一時チャットを新規作成する（既存DMを一時チャット化する機能は
  * SRSに明記が無いため対象外。常に新規roomを作るcreate_temp_dm_room RPCを使う）。
+ * Phase 28: 任意のチャット名（name）を指定できるようにした。作成時のみ設定可能で、
+ * 作成後のリネームは未対応（バックログ「一時チャットに名前を付けたい」のv1スコープ）。
+ * 未指定・空欄・空白のみの場合はRPC側でnullに正規化される。
  */
 export async function startTemporaryDirectMessage(
   targetUserId: string,
   durationOption: TempDmDurationOption,
   customValue?: { amount: number; unit: "minutes" | "hours" | "days" },
+  name?: string,
 ): Promise<StartDmState> {
   const supabase = await createClient();
 
@@ -180,6 +194,10 @@ export async function startTemporaryDirectMessage(
 
   if (user.id === targetUserId) {
     return { error: "自分自身とはDMを開始できません。" };
+  }
+
+  if (name && name.trim().length > TEMP_CHAT_NAME_MAX_LENGTH) {
+    return { error: "チャット名は50文字以内で入力してください。" };
   }
 
   let durationMs: number;
@@ -204,7 +222,11 @@ export async function startTemporaryDirectMessage(
 
   const { data: roomId, error: rpcError } = await supabase.rpc(
     "create_temp_dm_room",
-    { p_other_user_id: targetUserId, p_expires_at: expiresAt },
+    {
+      p_other_user_id: targetUserId,
+      p_expires_at: expiresAt,
+      p_name: name?.trim() || undefined,
+    },
   );
 
   if (rpcError || !roomId) {

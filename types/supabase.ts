@@ -339,7 +339,7 @@ export type Database = {
         Returns: string
       }
       create_temp_dm_room: {
-        Args: { p_expires_at: string; p_other_user_id: string }
+        Args: { p_expires_at: string; p_name?: string; p_other_user_id: string }
         Returns: string
       }
       delete_own_message: { Args: { p_message_id: string }; Returns: undefined }
@@ -356,6 +356,7 @@ export type Database = {
           other_user_id: string
           other_username: string
           room_id: string
+          room_name: string
         }[]
       }
       get_friend_requests: {

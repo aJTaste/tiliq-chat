@@ -1739,3 +1739,177 @@ $$;
 revoke execute on function public.get_group_conversation_list() from public;
 grant execute on function public.get_group_conversation_list() to authenticated;
 revoke execute on function public.get_group_conversation_list() from anon;
+
+-- =============================================================================
+-- Phase 28: 一時チャットの名前付け（作成時のみ）
+-- 適用済み（Supabase MCP: apply_migration "phase28_temp_chat_naming"）。
+-- create_temp_dm_roomにp_name（デフォルトnull、trim・50文字上限）を追加し、
+-- rooms.nameへ保存する。引数の型リストが変わるため既存2引数版はdrop→3引数版として
+-- create（Phase 6/8のget_conversation_list等と同じ既存パターン）。
+-- get_conversation_listは戻り値にroom_nameを追加（サイドバー一覧・チャットヘッダーでの
+-- 表示用）。戻り値の列構成変更のためdrop→create。
+-- -----------------------------------------------------------------------------
+
+drop function public.create_temp_dm_room(uuid, timestamptz);
+
+create function public.create_temp_dm_room(
+  p_other_user_id uuid,
+  p_expires_at timestamptz,
+  p_name text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room_id uuid;
+  v_self uuid := auth.uid();
+  v_are_friends boolean;
+  v_target_allows_strangers boolean;
+  v_name text;
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if v_self = p_other_user_id then
+    raise exception 'cannot create DM room with self';
+  end if;
+
+  if p_expires_at is null or p_expires_at <= now() then
+    raise exception 'invalid expiration time';
+  end if;
+
+  if p_expires_at > now() + interval '90 days' then
+    raise exception 'expiration time too far in the future';
+  end if;
+
+  if not exists (select 1 from public.profiles where id = p_other_user_id) then
+    raise exception 'target user not found';
+  end if;
+
+  if public.is_blocked(v_self, p_other_user_id) then
+    raise exception 'cannot start DM: blocked';
+  end if;
+
+  v_name := nullif(trim(coalesce(p_name, '')), '');
+  if v_name is not null and char_length(v_name) > 50 then
+    raise exception 'chat name too long';
+  end if;
+
+  select exists (
+    select 1 from public.friendships
+    where status = 'accepted'
+      and ((requester_id = v_self and addressee_id = p_other_user_id)
+        or (requester_id = p_other_user_id and addressee_id = v_self))
+  ) into v_are_friends;
+
+  if not v_are_friends then
+    select coalesce(dm_from_stranger_enabled, true) into v_target_allows_strangers
+    from public.user_settings
+    where user_id = p_other_user_id;
+
+    if not coalesce(v_target_allows_strangers, true) then
+      raise exception 'target user does not accept DMs from strangers';
+    end if;
+  end if;
+
+  insert into public.rooms (is_group, is_temporary, expires_at, name)
+  values (false, true, p_expires_at, v_name)
+  returning id into v_room_id;
+
+  insert into public.room_members (room_id, user_id, role)
+  values
+    (v_room_id, v_self, 'owner'),
+    (v_room_id, p_other_user_id, 'member');
+
+  return v_room_id;
+end;
+$$;
+
+revoke execute on function public.create_temp_dm_room(uuid, timestamptz, text) from public;
+revoke execute on function public.create_temp_dm_room(uuid, timestamptz, text) from anon;
+grant execute on function public.create_temp_dm_room(uuid, timestamptz, text) to authenticated;
+
+drop function public.get_conversation_list();
+
+create function public.get_conversation_list()
+returns table (
+  room_id uuid,
+  other_user_id uuid,
+  other_username text,
+  other_display_name text,
+  other_avatar_url text,
+  friendship_status text,
+  last_message_preview text,
+  last_message_at timestamptz,
+  is_temporary boolean,
+  expires_at timestamptz,
+  room_name text
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  with my_rooms as (
+    select rm.room_id, r.is_temporary, r.expires_at, r.name as room_name
+    from public.room_members rm
+    join public.rooms r on r.id = rm.room_id
+    where rm.user_id = auth.uid() and r.is_group = false
+  ),
+  other as (
+    select rm.room_id, rm.user_id as other_user_id
+    from public.room_members rm
+    where rm.room_id in (select room_id from my_rooms)
+      and rm.user_id <> auth.uid()
+  ),
+  last_msg as (
+    select distinct on (m.room_id)
+      m.room_id, m.content, m.image_url, m.created_at
+    from public.messages m
+    where m.room_id in (select room_id from my_rooms)
+      and m.deleted_at is null
+    order by m.room_id, m.created_at desc
+  ),
+  fs as (
+    select
+      case when f.requester_id = auth.uid() then f.addressee_id else f.requester_id end as counterpart_id,
+      f.status,
+      f.requester_id
+    from public.friendships f
+    where f.requester_id = auth.uid() or f.addressee_id = auth.uid()
+  )
+  select
+    o.room_id,
+    o.other_user_id,
+    p.username,
+    p.display_name,
+    p.avatar_url,
+    coalesce(
+      case
+        when fs.status = 'accepted' then 'accepted'
+        when fs.status = 'pending' and fs.requester_id = auth.uid() then 'pending_sent'
+        when fs.status = 'pending' then 'pending_received'
+        when fs.status = 'rejected' then 'rejected'
+      end,
+      'none'
+    ) as friendship_status,
+    coalesce(lm.content, case when lm.image_url is not null then '📷 画像' else null end) as last_message_preview,
+    lm.created_at as last_message_at,
+    mr.is_temporary,
+    mr.expires_at,
+    mr.room_name
+  from other o
+  join public.profiles p on p.id = o.other_user_id
+  join my_rooms mr on mr.room_id = o.room_id
+  left join last_msg lm on lm.room_id = o.room_id
+  left join fs on fs.counterpart_id = o.other_user_id
+  where not public.is_blocked(auth.uid(), o.other_user_id)
+  order by lm.created_at desc nulls last
+$$;
+
+revoke execute on function public.get_conversation_list() from public;
+revoke execute on function public.get_conversation_list() from anon;
+grant execute on function public.get_conversation_list() to authenticated;

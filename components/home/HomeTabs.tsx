@@ -30,6 +30,8 @@ export type ConversationItem =
       lastMessageAt: string | null;
       isTemporary: boolean;
       expiresAt: string | null;
+      // Phase 28: 一時チャットの名前付け。設定時はotherDisplayNameより優先して表示する。
+      roomName: string | null;
     }
   | {
       kind: "group";
@@ -138,8 +140,10 @@ function ConversationRow({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
+            {/* Phase 28: 一時チャットに名前が付いていればそちらを優先表示する
+                （アバターの頭文字は識別性維持のため相手の実名基準のまま据え置き）。 */}
             <p className="truncate text-sm font-medium text-ink">
-              {item.otherDisplayName}
+              {item.roomName ?? item.otherDisplayName}
             </p>
             {item.isTemporary && (
               <span className="shrink-0 rounded-full border border-clay/60 px-1.5 py-0.5 font-label text-[10px] text-clay">
@@ -327,7 +331,8 @@ export function HomeTabs({
       : items.filter((item) =>
           isDmConversation(item)
             ? item.otherDisplayName.toLowerCase().includes(normalizedQuery) ||
-              item.otherUsername.toLowerCase().includes(normalizedQuery)
+              item.otherUsername.toLowerCase().includes(normalizedQuery) ||
+              (item.roomName?.toLowerCase().includes(normalizedQuery) ?? false)
             : (item.groupName?.toLowerCase().includes(normalizedQuery) ??
                 false) ||
               item.memberNames.some((name) =>

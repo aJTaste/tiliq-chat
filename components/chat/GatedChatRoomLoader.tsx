@@ -149,15 +149,19 @@ export function GatedChatRoomLoader({
         return;
       }
 
-      // Phase 18: otherProfile確定後は以下3クエリが互いに独立している
+      // Phase 18: otherProfile確定後は以下4クエリが互いに独立している
       // （blocksはotherProfile.idのみ、messages/message_hiddenはroomId/currentUserIdのみに
       // 依存）ため、Promise.allでまとめて発行する（app/(shell)/chat/[roomId]/page.tsxの
       // 非ゲート経路と同じ並列化）。
+      // Phase 28: rooms.nameを追加取得（一時チャットの名前付け。loadGroupは元々room行を
+      // 取得していたが、DM側はこれまで不要だった）。
       const [
+        { data: room },
         { data: myBlockOfOther },
         { data: initialMessagesDesc, error: messagesError },
         { data: hiddenRows },
       ] = await Promise.all([
+        supabase.from("rooms").select("name").eq("id", roomId).single(),
         supabase
           .from("blocks")
           .select("id")
@@ -202,6 +206,7 @@ export function GatedChatRoomLoader({
             username: otherProfile.username,
             displayName: otherProfile.display_name,
             avatarUrl: otherProfile.avatar_url,
+            roomName: room?.name ?? null,
           },
           initialMessages,
           initialHasMore,

@@ -10,6 +10,10 @@ import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 import { Modal } from "@/components/ui/Modal";
 import { TempChatDurationField } from "./TempChatDurationField";
 
+// Phase 28: CreateTempChatPanel.tsxと同じ上限値（app/actions/rooms.tsの
+// TEMP_CHAT_NAME_MAX_LENGTHと揃える）。
+const TEMP_CHAT_NAME_MAX_LENGTH = 50;
+
 /**
  * Phase 25：相手が既に確定している状態（チャット画面のオプションメニュー・
  * ホーム一覧/検索結果の右クリックメニューから開く）で一時チャットを作成する
@@ -18,6 +22,7 @@ import { TempChatDurationField } from "./TempChatDurationField";
  * 既存の通常DM・既存の一時チャットの有無に関わらず常に新規roomを作成できる
  * （create_temp_dm_room RPCはそもそも既存ルームとのマージを行わない設計のため、
  * ここでは相手が既存DM相手かどうかのチェック自体を行わない＝何個でも作成できる）。
+ * Phase 28: チャット名（任意）の入力欄をCreateTempChatPanel.tsxと同様に追加。
  */
 export function CreateTempChatWithUserModal({
   targetUserId,
@@ -30,6 +35,7 @@ export function CreateTempChatWithUserModal({
   targetUsername: string;
   onClose: () => void;
 }) {
+  const [name, setName] = useState("");
   const [duration, setDuration] = useState<TempDmDurationOption>("10m");
   const [customAmount, setCustomAmount] = useState("");
   const [customUnit, setCustomUnit] = useState<"minutes" | "hours" | "days">(
@@ -58,6 +64,7 @@ export function CreateTempChatWithUserModal({
           duration === "custom"
             ? { amount: Number(customAmount), unit: customUnit }
             : undefined,
+          name,
         );
         if (result?.error) {
           setError(result.error);
@@ -98,6 +105,16 @@ export function CreateTempChatWithUserModal({
           </p>
           <p className="truncate text-xs text-ink-muted">@{targetUsername}</p>
         </div>
+
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="チャット名（任意）"
+          aria-label="一時チャットの名前"
+          maxLength={TEMP_CHAT_NAME_MAX_LENGTH}
+          className="w-full rounded-lg border border-band bg-surface px-3 py-2 text-sm text-ink outline-none focus-visible:border-tongue"
+        />
 
         <TempChatDurationField
           duration={duration}

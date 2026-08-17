@@ -245,6 +245,7 @@ export default async function ChatRoomPage({
         username: otherProfile.username,
         displayName: otherProfile.display_name,
         avatarUrl: otherProfile.avatar_url,
+        roomName: room.name,
       }}
       initialMessages={initialMessages}
       initialHasMore={initialHasMore}
