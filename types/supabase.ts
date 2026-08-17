@@ -161,6 +161,7 @@ export type Database = {
           auth_required: boolean
           id: string
           joined_at: string
+          last_read_at: string | null
           role: string
           room_id: string
           user_id: string
@@ -169,6 +170,7 @@ export type Database = {
           auth_required?: boolean
           id?: string
           joined_at?: string
+          last_read_at?: string | null
           role?: string
           room_id: string
           user_id: string
@@ -177,6 +179,7 @@ export type Database = {
           auth_required?: boolean
           id?: string
           joined_at?: string
+          last_read_at?: string | null
           role?: string
           room_id?: string
           user_id?: string
@@ -202,6 +205,7 @@ export type Database = {
           lock_secret: string | null
           lock_type: string
           name: string | null
+          read_receipts_enabled: boolean
         }
         Insert: {
           avatar_url?: string | null
@@ -213,6 +217,7 @@ export type Database = {
           lock_secret?: string | null
           lock_type?: string
           name?: string | null
+          read_receipts_enabled?: boolean
         }
         Update: {
           avatar_url?: string | null
@@ -224,6 +229,7 @@ export type Database = {
           lock_secret?: string | null
           lock_type?: string
           name?: string | null
+          read_receipts_enabled?: boolean
         }
         Relationships: []
       }
@@ -396,6 +402,7 @@ export type Database = {
       is_room_member: { Args: { p_room_id: string }; Returns: boolean }
       is_room_owner: { Args: { p_room_id: string }; Returns: boolean }
       mark_friend_requests_read: { Args: never; Returns: undefined }
+      mark_room_read: { Args: { p_room_id: string }; Returns: undefined }
       record_auth_attempt: { Args: { p_success: boolean }; Returns: undefined }
       remove_friend: { Args: { p_other_user_id: string }; Returns: undefined }
       respond_to_friend_request: {

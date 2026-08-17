@@ -20,12 +20,16 @@ export function MessageBubble({
   message,
   isOwn,
   senderName,
+  readLabel,
   onDelete,
   onHide,
 }: {
   message: MessageRow;
   isOwn: boolean;
   senderName?: string;
+  // Phase 29: 既読機能。設定時のみ吹き出しの外側下に表示する（DM="既読"固定文言、
+  // グループ="既読N"の件数表示。付与ロジックはChatRoom.tsx側のreadBadge参照）。
+  readLabel?: string;
   onDelete?: (messageId: string) => void;
   onHide?: (messageId: string) => void;
 }) {
@@ -154,6 +158,19 @@ export function MessageBubble({
             {formatTime(message.created_at)}
           </p>
         </div>
+
+        {/* Phase 29: 既読機能。吹き出しの外側・同じ側に小さく表示する（LINE等の
+            既読表示と同様の配置）。ChatRoom.tsx側で「自分が送った最新の既読済み
+            メッセージ」にのみ渡されるため、常にこの1件のみに表示される。 */}
+        {readLabel && (
+          <p
+            className={`mt-0.5 font-label text-[10px] text-ink-muted ${
+              isOwn ? "text-right" : "text-left"
+            }`}
+          >
+            {readLabel}
+          </p>
+        )}
 
         {menuOpen && hasMenu && (
           <div

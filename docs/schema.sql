@@ -1913,3 +1913,54 @@ $$;
 revoke execute on function public.get_conversation_list() from public;
 revoke execute on function public.get_conversation_list() from anon;
 grant execute on function public.get_conversation_list() to authenticated;
+
+-- =============================================================================
+-- Phase 29: 既読機能（FR-25）
+-- 適用済み（Supabase MCP: apply_migration "phase29_read_receipts"）。
+-- room_members.last_read_at（本人の閲覧位置）とrooms.read_receipts_enabled
+-- （グループのオーナーが既読表示のON/OFFを切り替えられるトグル。DMは常時ON）を追加。
+-- 事前にrollback付きトランザクションで、非オーナーによる直接UPDATEがRLSで
+-- （例外ではなく0行UPDATEという形で）ブロックされること・mark_room_read RPC経由なら
+-- 成功すること・read_receipts_enabledは既存rooms_update_ownerポリシーで完結すること
+-- を検証済み。
+-- -----------------------------------------------------------------------------
+
+alter table public.room_members add column last_read_at timestamptz;
+alter table public.rooms add column read_receipts_enabled boolean not null default true;
+
+-- mark_room_read: 自分の閲覧位置（last_read_at）を現在時刻に更新する。
+-- room_members_update_ownerポリシー（オーナー限定）では非オーナーは自分の行すら
+-- 更新できないため、set_room_auth_required（Phase 6）と同じ理由でSECURITY DEFINER
+-- RPCが必要（docs/lessons.mdの「自己参照的なRLS更新」の分岐）。
+create function public.mark_room_read(p_room_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_self uuid := auth.uid();
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+  if not public.is_room_member(p_room_id) then
+    raise exception 'not a member of this room';
+  end if;
+
+  update public.room_members
+  set last_read_at = now()
+  where room_id = p_room_id and user_id = v_self;
+end;
+$$;
+
+revoke execute on function public.mark_room_read(uuid) from public;
+revoke execute on function public.mark_room_read(uuid) from anon;
+grant execute on function public.mark_room_read(uuid) to authenticated;
+
+-- room_members.last_read_atの変更をリアルタイムで相手に届けるため、Realtime対象に追加。
+alter publication supabase_realtime add table public.room_members;
+
+-- read_receipts_enabled/name/avatar_urlの更新は、既存rooms_update_ownerポリシー
+-- （is_room_owner(id)。どのRLS判定条件にも使われない単純な列のため新規RPC不要）が
+-- 引き続きカバーする。app/actions/rooms.tsのupdateGroupReadReceiptsEnabled参照。

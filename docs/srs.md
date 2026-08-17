@@ -173,8 +173,9 @@
 | FR-22 | 知らない人からのDM受信設定（オン/オフ）                                                                                 | 必須   |
 | FR-23 | ブロック機能                                                                                                            | 必須   |
 | FR-24 | プッシュ通知オン/オフ（一括切り替え。配置は実装時に決定）                                                               | 必須   |
+| FR-25 | 既読機能（DMは常時ON・グループはオーナーがON/OFF切替可。グループは既読人数を表示）        | 必須   |
 
-※ 実装状況に関する注記（Phase 8〜9で判明、Phase 15追記、Phase 19更新）：
+※ 実装状況に関する注記（Phase 8〜9で判明、Phase 15追記、Phase 19更新、Phase 29追記）：
 
 - **FR-4（グループチャット作成）：** Phase 19でM1（最小スコープ）を実装済み。グループ作成
   （検索から複数選択）・ホーム「グループ」タブでの一覧表示・グループチャット内でのメッセージ
@@ -185,6 +186,13 @@
 - **FR-14（チャット内検索）：** 基本の検索機能（フレンド／ストレンジャー一覧内でのフィルタ）
   自体はPhase 9で実装済み。「オプションで同グループメンバーも追加可」の部分は、FR-4のM1が
   検索対象そのものではなく会話一覧・作成フローの実装だったため、引き続き未対応のまま。
+- **FR-25（既読機能）：** Phase 29で実装済み。表示はチャット画面内のみ（サイドバーの会話
+  一覧には未反映）で、自分が送った直近の既読済みメッセージ1件にのみバッジを表示する
+  （LINE等と同様、既読済みメッセージ全件に付けると冗長になるため）。DMは常時ON（相手に
+  読んだことが伝わらないようにするオプトアウトは無し）、グループはオーナーがチャット
+  オプション→メンバー一覧のグループ設定からON/OFFを切り替えられ、OFFの間は誰にも既読
+  バッジが表示されない。作成後のリネームと同様、既読済み人数の内訳（誰が読んだか）の
+  表示は行わない（グループ人数上限50人に対し名前列挙は煩雑になるため、件数表示のみ）。
 
 ---
 
@@ -354,6 +362,8 @@ Room
 ├── expires_at   : TIMESTAMPTZ（一時チャットの有効期限。NULLなら期限なし。最大90日）
 ├── lock_type    : TEXT NOT NULL DEFAULT 'none'（'none' | 'pin' | 'key'。※未使用。下記注記参照）
 ├── lock_secret  : TEXT（ハッシュ済み認証PIN／認証キー。※未使用。下記注記参照）
+├── read_receipts_enabled : BOOLEAN NOT NULL DEFAULT true（FR-25。グループのみ意味を持つ
+│                          オーナー切替トグル。DMは常時ONのためこの列を参照しない）
 └── created_at   : TIMESTAMPTZ NOT NULL DEFAULT now()
 
 ※ lock_type/lock_secretについて（Phase 6で判明）：
@@ -379,6 +389,10 @@ RoomMember
 ├── user_id       : UUID NOT NULL REFERENCES User(id) ON DELETE CASCADE
 ├── role          : TEXT NOT NULL DEFAULT 'member'（'owner' | 'member'）
 ├── auth_required : BOOLEAN NOT NULL DEFAULT false（Phase 6追加。上記の「各チャット」鍵トグル。自分の行のみ）
+├── last_read_at  : TIMESTAMPTZ（Phase 29追加・FR-25。自分がこのルームを最後に開いた時刻。
+│                   NULLなら未読状態。auth_requiredと同じく自分の行のみ書き込み可能で、
+│                   room_members_update_ownerポリシー（オーナー限定）では非オーナーが
+│                   自分の行すら更新できないため、専用RPC `mark_room_read` 経由で更新する）
 ├── joined_at     : TIMESTAMPTZ NOT NULL DEFAULT now()
 └── UNIQUE(room_id, user_id)
 
@@ -562,7 +576,6 @@ TempChatSession（一時チャット・両者が閉じた場合の削除オプ�
 - UIテーマ・チャットレイアウト切り替え（LINE風・Discord風など、複数のメッセージ表示レイアウトから選択可能にする）
 - デスクトップアプリ化
 - 高度なセキュリティ機能（E2EE含む）
-- メッセージ既読管理
 - スパム自動判定・自動ブロック（ルールベースから検討）
 - ユーザーブロック・通報機能の拡充
 - プッシュ通知トグルの配置確定（実装時に決定）

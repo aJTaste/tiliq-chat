@@ -46,10 +46,10 @@ export function GatedChatRoomLoader({
 
     async function loadGroup() {
       // Phase 21: グループメンバー管理M2のためroleも取得し、自分を除外せず
-      // members配列に含める。
+      // members配列に含める。Phase 29: 既読機能のためlast_read_atも取得する。
       const { data: memberRows } = await supabase
         .from("room_members")
-        .select("user_id, role")
+        .select("user_id, role, last_read_at")
         .eq("room_id", roomId);
 
       if (!memberRows) {
@@ -59,11 +59,14 @@ export function GatedChatRoomLoader({
 
       const allMemberIds = memberRows.map((row) => row.user_id);
       const roleById = new Map(memberRows.map((row) => [row.user_id, row.role]));
+      const lastReadAtById = new Map(
+        memberRows.map((row) => [row.user_id, row.last_read_at]),
+      );
 
       const [{ data: room }, { data: memberProfiles }] = await Promise.all([
         supabase
           .from("rooms")
-          .select("name, avatar_url")
+          .select("name, avatar_url, read_receipts_enabled")
           .eq("id", roomId)
           .single(),
         supabase
@@ -78,6 +81,7 @@ export function GatedChatRoomLoader({
         role: (roleById.get(p.id) === "owner" ? "owner" : "member") as
           | "owner"
           | "member",
+        lastReadAt: lastReadAtById.get(p.id) ?? null,
       }));
 
       const [
@@ -116,6 +120,7 @@ export function GatedChatRoomLoader({
             kind: "group",
             roomName: room?.name ?? null,
             avatarUrl: room?.avatar_url ?? null,
+            readReceiptsEnabled: room?.read_receipts_enabled ?? true,
             members,
           },
           initialMessages,
@@ -127,9 +132,10 @@ export function GatedChatRoomLoader({
     }
 
     async function loadDm() {
+      // Phase 29: 既読機能のためlast_read_atも取得する。
       const { data: otherMember } = await supabase
         .from("room_members")
-        .select("user_id")
+        .select("user_id, last_read_at")
         .eq("room_id", roomId)
         .neq("user_id", currentUserId)
         .maybeSingle();
@@ -207,6 +213,7 @@ export function GatedChatRoomLoader({
             displayName: otherProfile.display_name,
             avatarUrl: otherProfile.avatar_url,
             roomName: room?.name ?? null,
+            lastReadAt: otherMember?.last_read_at ?? null,
           },
           initialMessages,
           initialHasMore,

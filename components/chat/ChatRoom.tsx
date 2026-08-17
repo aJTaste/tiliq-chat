@@ -33,6 +33,7 @@ import { CreateTempChatWithUserModal } from "@/components/home/CreateTempChatWit
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 type MessageRow = Tables<"messages">;
+type RoomMemberRow = Tables<"room_members">;
 
 const PAGE_SIZE = 30;
 const MESSAGE_MAX_LENGTH = 4000;
@@ -96,6 +97,10 @@ function formatDateDividerLabel(iso: string) {
 // 判定する必要があるため）。memberCountはmembers.lengthで代替できるため削除した。
 // Phase 28: 一時チャットの名前付け。roomNameが設定されていればDMヘッダー・一覧の
 // 表示名を上書きする（相手の実名displayNameはサブテキストとして残し、識別性を保つ）。
+// Phase 29: 既読機能。DMはlastReadAt（相手のroom_members.last_read_at）を、
+// グループはreadReceiptsEnabled（オーナーが切替可能なON/OFF）とmembers各行の
+// lastReadAtを持たせる。既読状態そのものはChatRoom.tsx側でreadStateByUserId
+// （Realtime購読で更新される別state）として一元管理するため、ここは初期値の受け渡しのみ。
 export type ChatPeer =
   | {
       kind: "dm";
@@ -104,12 +109,19 @@ export type ChatPeer =
       displayName: string;
       avatarUrl: string | null;
       roomName: string | null;
+      lastReadAt: string | null;
     }
   | {
       kind: "group";
       roomName: string | null;
       avatarUrl: string | null;
-      members: { id: string; displayName: string; role: "owner" | "member" }[];
+      readReceiptsEnabled: boolean;
+      members: {
+        id: string;
+        displayName: string;
+        role: "owner" | "member";
+        lastReadAt: string | null;
+      }[];
     };
 
 type ChatRoomProps = {
@@ -157,8 +169,17 @@ export function ChatRoom({
   // GatedChatRoomLoader経由のグループでは効かないため、ローカルstate更新に一本化した）。
   // ヘッダー表示・memberNameById・isGroupOwnerの導出は全てpeer.membersではなく
   // このgroupMembersを参照する（追加・削除後に即座に一致させるため）。
+  // lastReadAtはgroupMembersではなく別state（readStateByUserId）で一元管理するため
+  // （Phase 29参照）、初期化時点で切り落として既存のGroupMember型（GroupMembersPanel.tsxの
+  // props型）との整合を保つ。
   const [groupMembers, setGroupMembers] = useState(() =>
-    peer.kind === "group" ? peer.members : [],
+    peer.kind === "group"
+      ? peer.members.map(({ id, displayName, role }) => ({
+          id,
+          displayName,
+          role,
+        }))
+      : [],
   );
   // Phase 24: グループ名・アバターも同じ理由（GatedChatRoomLoader経由ではrouter.refresh()が
   // 効かない）でローカルstateに一本化し、GroupMembersPanelのonProfileChangeで更新する。
@@ -168,6 +189,22 @@ export function ChatRoom({
   const [groupAvatarUrl, setGroupAvatarUrl] = useState(() =>
     peer.kind === "group" ? peer.avatarUrl : null,
   );
+  // Phase 29: 既読機能。グループのオーナーが切替可能な既読表示ON/OFF
+  // （GroupMembersPanelのonReadReceiptsChangeで更新）。
+  const [groupReadReceiptsEnabled, setGroupReadReceiptsEnabled] = useState(() =>
+    peer.kind === "group" ? peer.readReceiptsEnabled : false,
+  );
+  // Phase 29: 既読機能。DM/グループ共通で「相手（達）が最後にこのルームを開いた時刻」を
+  // user_id単位で保持する。room_membersのRealtime UPDATE購読で更新される。
+  const [readStateByUserId, setReadStateByUserId] = useState<
+    Map<string, string | null>
+  >(() => {
+    if (peer.kind === "dm") return new Map([[peer.id, peer.lastReadAt]]);
+    if (peer.kind === "group") {
+      return new Map(peer.members.map((m) => [m.id, m.lastReadAt]));
+    }
+    return new Map();
+  });
   const [membersOpen, setMembersOpen] = useState(false);
   // Phase 25: チャット画面からその場でDM相手との一時チャットを作成する導線。
   const [tempChatOpen, setTempChatOpen] = useState(false);
@@ -283,6 +320,10 @@ export function ChatRoom({
             if (prev.some((m) => m.id === newMessage.id)) return prev;
             return [...prev, newMessage];
           });
+          // Phase 29: 既読機能。チャットを開いている間に届いた新着メッセージは
+          // 即座に「読んだ」ものとして扱う（LINE等の一般的なチャットアプリと同じ挙動）。
+          // 失敗しても致命的ではないベストエフォート機能のため、エラーは無視する。
+          void supabase.rpc("mark_room_read", { p_room_id: roomId });
         },
       )
       .on(
@@ -304,11 +345,36 @@ export function ChatRoom({
           });
         },
       )
+      // Phase 29: 既読機能。他メンバーのlast_read_at更新をリアルタイムに反映し、
+      // 「既読」バッジが相手の閲覧後すぐに表示されるようにする。
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "room_members",
+          filter: `room_id=eq.${roomId}`,
+        },
+        (payload) => {
+          const updated = payload.new as RoomMemberRow;
+          setReadStateByUserId((prev) => {
+            const next = new Map(prev);
+            next.set(updated.user_id, updated.last_read_at);
+            return next;
+          });
+        },
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
+  }, [roomId, supabase]);
+
+  // Phase 29: 既読機能。このチャットを開いた（roomIdが変わった）タイミングで
+  // 自分の閲覧位置を更新する。ベストエフォートのためエラーは無視する。
+  useEffect(() => {
+    void supabase.rpc("mark_room_read", { p_room_id: roomId });
   }, [roomId, supabase]);
 
   async function loadOlderMessages() {
@@ -613,6 +679,64 @@ export function ChatRoom({
     !blockGateActive &&
     (inputValue.trim().length > 0 || selectedFile !== null);
 
+  // Phase 25/9由来の非表示フィルタを1箇所に集約（従来はレンダー内IIFEで都度計算していたが、
+  // Phase 29の既読バッジ計算でも同じフィルタ済み一覧が必要になったためuseMemo化した）。
+  const visibleMessages = useMemo(
+    () => messages.filter((message) => !hiddenIds.has(message.id)),
+    [messages, hiddenIds],
+  );
+
+  // Phase 29: 既読機能。LINE等と同じ「自分が送った最新の既読済みメッセージにのみバッジを
+  // 付ける」方式（全ての既読済みメッセージに付けると冗長になるため）。DMは"既読"固定文言、
+  // グループは既読人数（読んだ人の名前列挙はグループ人数が多いと煩雑になるため件数のみ、
+  // ユーザー確認済み）。groupReadReceiptsEnabledがfalseの場合はグループ全体で非表示にする。
+  const readBadge = useMemo<{ messageId: string; label: string } | null>(() => {
+    if (peer.kind === "dm") {
+      const otherLastReadAt = readStateByUserId.get(peer.id) ?? null;
+      if (!otherLastReadAt) return null;
+      let candidate: MessageRow | null = null;
+      for (const message of visibleMessages) {
+        if (message.sender_id !== currentUserId) continue;
+        if (new Date(message.created_at) <= new Date(otherLastReadAt)) {
+          candidate = message;
+        }
+      }
+      return candidate ? { messageId: candidate.id, label: "既読" } : null;
+    }
+
+    if (peer.kind === "group") {
+      if (!groupReadReceiptsEnabled) return null;
+      let candidate: MessageRow | null = null;
+      let candidateCount = 0;
+      for (const message of visibleMessages) {
+        if (message.sender_id !== currentUserId) continue;
+        const count = groupMembers.reduce((acc, member) => {
+          if (member.id === currentUserId) return acc;
+          const lastReadAt = readStateByUserId.get(member.id);
+          return lastReadAt && new Date(lastReadAt) >= new Date(message.created_at)
+            ? acc + 1
+            : acc;
+        }, 0);
+        if (count > 0) {
+          candidate = message;
+          candidateCount = count;
+        }
+      }
+      return candidate
+        ? { messageId: candidate.id, label: `既読${candidateCount}` }
+        : null;
+    }
+
+    return null;
+  }, [
+    peer,
+    visibleMessages,
+    readStateByUserId,
+    currentUserId,
+    groupMembers,
+    groupReadReceiptsEnabled,
+  ]);
+
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-3 border-b border-band/60 px-4 py-3">
@@ -730,11 +854,13 @@ export function ChatRoom({
           isOwner={isGroupOwner}
           roomName={groupName}
           avatarUrl={groupAvatarUrl}
+          readReceiptsEnabled={groupReadReceiptsEnabled}
           onMembersChange={setGroupMembers}
           onProfileChange={(next) => {
             setGroupName(next.roomName);
             setGroupAvatarUrl(next.avatarUrl);
           }}
+          onReadReceiptsChange={setGroupReadReceiptsEnabled}
           onClose={() => setMembersOpen(false)}
         />
       )}
@@ -774,10 +900,6 @@ export function ChatRoom({
 
         <div className="flex flex-col gap-2">
           {(() => {
-            const visibleMessages = messages.filter(
-              (message) => !hiddenIds.has(message.id),
-            );
-
             if (visibleMessages.length === 0 && !hasMore) {
               return (
                 <p className="px-2 py-8 text-center text-sm text-ink-muted">
@@ -812,6 +934,11 @@ export function ChatRoom({
                       message.sender_id !== currentUserId
                         ? (memberNameById?.get(message.sender_id ?? "") ??
                           "不明なメンバー")
+                        : undefined
+                    }
+                    readLabel={
+                      readBadge?.messageId === message.id
+                        ? readBadge.label
                         : undefined
                     }
                     onDelete={handleDeleteMessage}

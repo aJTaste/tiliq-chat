@@ -645,3 +645,61 @@ export async function updateGroupProfile(
   revalidatePath("/home");
   return { success: true };
 }
+
+/**
+ * Phase 29: 既読機能。グループのオーナーが既読表示のON/OFFを切り替える
+ * （バックログの条件付き要望「グループでは作成者/管理者が既読機能の有無を設定できるように」に
+ * 対応。DMは常時ONで個人単位のオプトアウトは無し＝v1スコープ外）。
+ * read_receipts_enabledはupdateGroupProfileのname/avatar_urlと同じ理由
+ * （どのRLS判定条件にも使われない単純な列）で既存rooms_update_ownerポリシーの
+ * 素のUPDATEで完結し、新規RPCは不要。
+ */
+export async function updateGroupReadReceiptsEnabled(
+  roomId: string,
+  enabled: boolean,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const { data: room } = await supabase
+    .from("rooms")
+    .select("is_group")
+    .eq("id", roomId)
+    .maybeSingle();
+
+  if (!room?.is_group) {
+    return { success: false, error: "グループチャットが見つかりません。" };
+  }
+
+  const { data: myRow } = await supabase
+    .from("room_members")
+    .select("role")
+    .eq("room_id", roomId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (myRow?.role !== "owner") {
+    return {
+      success: false,
+      error: "この操作はグループのオーナーのみ行えます。",
+    };
+  }
+
+  const { error } = await supabase
+    .from("rooms")
+    .update({ read_receipts_enabled: enabled })
+    .eq("id", roomId);
+
+  if (error) {
+    return { success: false, error: "既読表示設定の更新に失敗しました。" };
+  }
+
+  revalidatePath(`/chat/${roomId}`);
+  return { success: true };
+}

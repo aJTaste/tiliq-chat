@@ -11,6 +11,7 @@ import {
   removeGroupMember,
   transferGroupOwnership,
   updateGroupProfile,
+  updateGroupReadReceiptsEnabled,
 } from "@/app/actions/rooms";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 import {
@@ -52,6 +53,9 @@ const GROUP_NAME_MAX_LENGTH = 50;
  * Phase 24: グループ名・アバター編集（グループ設定セクション）を追加。画像選択は
  * ChatRoom.tsxのselectedFile/previewUrlと同じ「選択直後はアップロードせずプレビューのみ、
  * 保存ボタン押下時に初めてcompressImage→uploadImageToCloudinaryする」ステージング方式。
+ * Phase 29: 既読機能。グループのオーナーが既読表示のON/OFFを切り替えるトグルを
+ * グループ設定セクションに追加（名前・アバターと違い即時保存。名前・アバターのような
+ * ステージング方式にする必要が薄い単純なON/OFFのため）。
  * サイドバー再設計の残タスク：`components/ui/Modal.tsx`へ追従（背景クリック・Escapeキーの
  * onClose呼び出しをModal側に委譲）。内側のパディング・タイトル行はModal導入前の見た目を
  * 変えないためそのままこのファイル側に残す（Modal.tsxのコメント参照）。
@@ -63,8 +67,10 @@ export function GroupMembersPanel({
   isOwner,
   roomName,
   avatarUrl,
+  readReceiptsEnabled,
   onMembersChange,
   onProfileChange,
+  onReadReceiptsChange,
   onClose,
 }: {
   roomId: string;
@@ -73,8 +79,10 @@ export function GroupMembersPanel({
   isOwner: boolean;
   roomName: string | null;
   avatarUrl: string | null;
+  readReceiptsEnabled: boolean;
   onMembersChange: (next: GroupMember[]) => void;
   onProfileChange: (next: { roomName: string | null; avatarUrl: string | null }) => void;
+  onReadReceiptsChange: (enabled: boolean) => void;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -95,6 +103,9 @@ export function GroupMembersPanel({
   >(null);
   const [savingProfile, setSavingProfile] = useState(false);
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Phase 29: 既読機能のON/OFFトグル。名前・アバターと違いステージング不要（即時保存）。
+  const [readReceiptsPending, setReadReceiptsPending] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -366,6 +377,29 @@ export function GroupMembersPanel({
     })();
   }
 
+  // Phase 29: 既読機能のON/OFF切替。名前・アバターと違い保存ボタンを介さず即時反映する
+  // （AuthSettingsForm.tsxのtoggleScopeLaunch等と同じ「楽観的更新→失敗時ロールバック」方式）。
+  function handleToggleReadReceipts() {
+    const next = !readReceiptsEnabled;
+    onReadReceiptsChange(next);
+    setError(null);
+    setReadReceiptsPending(true);
+    void (async () => {
+      try {
+        const result = await updateGroupReadReceiptsEnabled(roomId, next);
+        if (!result.success) {
+          onReadReceiptsChange(!next);
+          setError(result.error);
+        }
+      } catch {
+        onReadReceiptsChange(!next);
+        setError(NETWORK_ERROR_MESSAGE);
+      } finally {
+        setReadReceiptsPending(false);
+      }
+    })();
+  }
+
   const displayAvatarUrl = stagedAvatarPreviewUrl ?? avatarUrl;
 
   return (
@@ -445,6 +479,17 @@ export function GroupMembersPanel({
                 {savingProfile ? "保存中..." : "保存"}
               </button>
             </div>
+            {/* Phase 29: 既読機能。バックログの条件付き要望通り、オーナーがグループ全体の
+                既読表示ON/OFFを切り替えられるようにする（DMは常時ONで対象外）。 */}
+            <label className="flex items-center justify-between gap-3 text-sm text-ink">
+              既読表示
+              <input
+                type="checkbox"
+                checked={readReceiptsEnabled}
+                onChange={handleToggleReadReceipts}
+                disabled={readReceiptsPending}
+              />
+            </label>
           </div>
         )}
 

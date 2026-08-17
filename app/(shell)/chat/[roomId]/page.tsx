@@ -29,7 +29,7 @@ export default async function ChatRoomPage({
   const [roomResult, myMembershipResult, settingsResult] = await Promise.all([
     supabase
       .from("rooms")
-      .select("id, is_group, is_temporary, name, avatar_url")
+      .select("id, is_group, is_temporary, name, avatar_url, read_receipts_enabled")
       .eq("id", roomId)
       .maybeSingle(),
     // FR-20「各チャット」スコープ：自分がこの部屋に鍵をかけているか
@@ -103,9 +103,10 @@ export default async function ChatRoomPage({
   if (room.is_group) {
     // Phase 21: グループメンバー管理M2のためroleも取得し、自分を除外せず
     // members配列に含める（メンバー管理パネルで「自分がオーナーか」を判定するため）。
+    // Phase 29: 既読機能のためlast_read_atも取得する。
     const { data: memberRows } = await supabase
       .from("room_members")
-      .select("user_id, role")
+      .select("user_id, role, last_read_at")
       .eq("room_id", roomId);
 
     if (!memberRows) {
@@ -114,6 +115,9 @@ export default async function ChatRoomPage({
 
     const allMemberIds = memberRows.map((row) => row.user_id);
     const roleById = new Map(memberRows.map((row) => [row.user_id, row.role]));
+    const lastReadAtById = new Map(
+      memberRows.map((row) => [row.user_id, row.last_read_at]),
+    );
 
     // room_members.user_idはauth.users(id)を参照しprofiles(id)への直接FKが無いため、
     // PostgRESTのネスト埋め込みは使えず2段階のクエリになる（既存のDM側otherMember→
@@ -129,6 +133,7 @@ export default async function ChatRoomPage({
       role: (roleById.get(p.id) === "owner" ? "owner" : "member") as
         | "owner"
         | "member",
+      lastReadAt: lastReadAtById.get(p.id) ?? null,
     }));
 
     // blocksクエリは省略（グループには1対1のブロックUIが無いM1スコープの制約。
@@ -165,6 +170,7 @@ export default async function ChatRoomPage({
           kind: "group",
           roomName: room.name,
           avatarUrl: room.avatar_url,
+          readReceiptsEnabled: room.read_receipts_enabled,
           members,
         }}
         initialMessages={initialMessages}
@@ -177,9 +183,10 @@ export default async function ChatRoomPage({
     );
   }
 
+  // Phase 29: 既読機能のためlast_read_atも取得する。
   const { data: otherMember } = await supabase
     .from("room_members")
-    .select("user_id")
+    .select("user_id, last_read_at")
     .eq("room_id", roomId)
     .neq("user_id", user.id)
     .maybeSingle();
@@ -246,6 +253,7 @@ export default async function ChatRoomPage({
         displayName: otherProfile.display_name,
         avatarUrl: otherProfile.avatar_url,
         roomName: room.name,
+        lastReadAt: otherMember?.last_read_at ?? null,
       }}
       initialMessages={initialMessages}
       initialHasMore={initialHasMore}
