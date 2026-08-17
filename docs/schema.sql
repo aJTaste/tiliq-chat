@@ -2142,3 +2142,171 @@ $$;
 revoke execute on function public.get_group_conversation_list() from public;
 grant execute on function public.get_group_conversation_list() to authenticated;
 revoke execute on function public.get_group_conversation_list() from anon;
+
+-- =============================================================================
+-- 実機QAで発見したDBバグ2件の修正（2026-08-17）
+-- 適用済み（Supabase MCP: apply_migration "fix_search_users_duplicate_rows",
+-- "fix_get_or_create_dm_room_exclude_temp_rooms"）。アプリコードの変更・
+-- types/supabase.tsの再生成は不要（両関数ともシグネチャ不変）。
+-- -----------------------------------------------------------------------------
+
+-- 1. fix_search_users_duplicate_rows
+-- search_usersのexisting_dm CTEが、相手との is_group=false ルーム1件につき1行を
+-- 返しており、同一相手と通常DM＋一時チャットが併存すると検索結果が重複していた
+-- （AddUserPanel.tsxでReactのduplicate key警告）。distinct onで1行に畳み、
+-- 一時チャットより通常DMを優先する優先順位を付けた。
+-- fs CTE（双方向friendships）も同種の重複リスクがあったため予防的にdistinct on化。
+create or replace function public.search_users(p_query text)
+returns table (
+  user_id uuid,
+  username text,
+  display_name text,
+  avatar_url text,
+  friendship_status text,
+  existing_room_id uuid
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  with fs as (
+    select distinct on (counterpart_id)
+      counterpart_id,
+      status,
+      requester_id
+    from (
+      select
+        case when f.requester_id = auth.uid() then f.addressee_id else f.requester_id end as counterpart_id,
+        f.status,
+        f.requester_id
+      from public.friendships f
+      where f.requester_id = auth.uid() or f.addressee_id = auth.uid()
+    ) x
+    order by
+      counterpart_id,
+      case status
+        when 'accepted' then 0
+        when 'pending' then 1
+        when 'rejected' then 2
+        else 3
+      end,
+      case when requester_id = auth.uid() then 1 else 0 end
+  ),
+  existing_dm as (
+    select distinct on (rm2.user_id)
+      rm1.room_id,
+      rm2.user_id as other_user_id
+    from public.room_members rm1
+    join public.room_members rm2
+      on rm2.room_id = rm1.room_id and rm2.user_id <> auth.uid()
+    join public.rooms r
+      on r.id = rm1.room_id and r.is_group = false
+    where rm1.user_id = auth.uid()
+    order by rm2.user_id, r.is_temporary, r.created_at
+  )
+  select
+    p.id,
+    p.username,
+    p.display_name,
+    p.avatar_url,
+    coalesce(
+      case
+        when fs.status = 'accepted' then 'accepted'
+        when fs.status = 'pending' and fs.requester_id = auth.uid() then 'pending_sent'
+        when fs.status = 'pending' then 'pending_received'
+        when fs.status = 'rejected' then 'rejected'
+      end,
+      'none'
+    ) as friendship_status,
+    ed.room_id as existing_room_id
+  from public.profiles p
+  left join fs on fs.counterpart_id = p.id
+  left join existing_dm ed on ed.other_user_id = p.id
+  where p.id <> auth.uid()
+    and p_query is not null
+    and length(trim(p_query)) > 0
+    and p.username ilike ('%' || trim(p_query) || '%')
+    and not public.is_blocked(auth.uid(), p.id)
+  order by p.username
+  limit 20
+$$;
+
+-- 2. fix_get_or_create_dm_room_exclude_temp_rooms
+-- 既存DM検索がis_temporaryを除外しておらず、通常DMを開始したつもりで一時チャットの
+-- 部屋に入る可能性があった（期限切れでroomごと削除されるためデータ喪失に見える）。
+-- is_temporary = false を追加し、order by created_atで決定的にした。
+create or replace function public.get_or_create_dm_room(p_other_user_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room_id uuid;
+  v_self uuid := auth.uid();
+  v_are_friends boolean;
+  v_target_allows_strangers boolean;
+begin
+  if v_self is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if v_self = p_other_user_id then
+    raise exception 'cannot create DM room with self';
+  end if;
+
+  if not exists (select 1 from public.profiles where id = p_other_user_id) then
+    raise exception 'target user not found';
+  end if;
+
+  if public.is_blocked(v_self, p_other_user_id) then
+    raise exception 'cannot start DM: blocked';
+  end if;
+
+  -- 既存の「通常」DM（is_group=false かつ is_temporary=false）のみを検索する。
+  select rm1.room_id into v_room_id
+  from public.room_members rm1
+  join public.room_members rm2 on rm1.room_id = rm2.room_id
+  join public.rooms r on r.id = rm1.room_id
+  where rm1.user_id = v_self
+    and rm2.user_id = p_other_user_id
+    and r.is_group = false
+    and r.is_temporary = false
+  order by r.created_at
+  limit 1;
+
+  if v_room_id is not null then
+    return v_room_id;
+  end if;
+
+  select exists (
+    select 1 from public.friendships
+    where status = 'accepted'
+      and ((requester_id = v_self and addressee_id = p_other_user_id)
+        or (requester_id = p_other_user_id and addressee_id = v_self))
+  ) into v_are_friends;
+
+  if not v_are_friends then
+    select coalesce(dm_from_stranger_enabled, true) into v_target_allows_strangers
+    from public.user_settings
+    where user_id = p_other_user_id;
+
+    if not coalesce(v_target_allows_strangers, true) then
+      raise exception 'target user does not accept DMs from strangers';
+    end if;
+  end if;
+
+  insert into public.rooms (is_group) values (false)
+  returning id into v_room_id;
+
+  insert into public.room_members (room_id, user_id, role)
+  values
+    (v_room_id, v_self, 'owner'),
+    (v_room_id, p_other_user_id, 'member');
+
+  return v_room_id;
+end;
+$$;
+
+-- EXECUTE権限（create or replaceのため既存ACL・anon revokeは維持される。再実行不要）
