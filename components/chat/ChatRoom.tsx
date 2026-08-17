@@ -30,6 +30,7 @@ import { deleteMessage, hideMessage } from "@/app/actions/messages";
 import { ChatRoomOptionsMenu } from "./ChatRoomOptionsMenu";
 import { GroupMembersPanel } from "./GroupMembersPanel";
 import { CreateTempChatWithUserModal } from "@/components/home/CreateTempChatWithUserModal";
+import { RenameTempChatModal } from "./RenameTempChatModal";
 import { NETWORK_ERROR_MESSAGE } from "@/lib/errors";
 
 type MessageRow = Tables<"messages">;
@@ -189,6 +190,12 @@ export function ChatRoom({
   const [groupAvatarUrl, setGroupAvatarUrl] = useState(() =>
     peer.kind === "group" ? peer.avatarUrl : null,
   );
+  // Phase 30: 一時チャットのリネーム（DMのみ）。groupName/groupAvatarUrlと同じ理由
+  // （GatedChatRoomLoader経由ではrouter.refresh()が効かない）でローカルstate化し、
+  // RenameTempChatModalのonRenamedで更新する。
+  const [dmRoomName, setDmRoomName] = useState(() =>
+    peer.kind === "dm" ? peer.roomName : null,
+  );
   // Phase 29: 既読機能。グループのオーナーが切替可能な既読表示ON/OFF
   // （GroupMembersPanelのonReadReceiptsChangeで更新）。
   const [groupReadReceiptsEnabled, setGroupReadReceiptsEnabled] = useState(() =>
@@ -208,6 +215,8 @@ export function ChatRoom({
   const [membersOpen, setMembersOpen] = useState(false);
   // Phase 25: チャット画面からその場でDM相手との一時チャットを作成する導線。
   const [tempChatOpen, setTempChatOpen] = useState(false);
+  // Phase 30: 一時チャットのリネームモーダル（DMのみ）。
+  const [renameOpen, setRenameOpen] = useState(false);
 
   // Phase 6: メッセージ削除（FR-16）・非表示（FR-17）。
   // 非表示は自分の画面にのみ影響するローカルなフィルタなのでRealtime購読は不要。
@@ -768,16 +777,18 @@ export function ChatRoom({
           <>
             {/* Phase 28: アバターの頭文字は常に相手の実名（peer.displayName）基準のまま
                 （チャット名で上書きすると「誰との会話か」が視覚的に分からなくなるため）。
-                タイトルはroomName優先、設定時は実名を@usernameと並べてサブテキストに残す。 */}
+                タイトルはdmRoomName優先、設定時は実名を@usernameと並べてサブテキストに残す。
+                Phase 30: peer.roomNameではなくローカルstateのdmRoomNameを参照する
+                （groupName/groupAvatarUrlと同じ理由。リネーム結果を即座に反映するため）。 */}
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-band/60 font-label text-sm text-ink-muted">
               {peer.displayName.slice(0, 1)}
             </div>
             <div className="min-w-0">
               <p className="truncate font-medium text-ink">
-                {peer.roomName ?? peer.displayName}
+                {dmRoomName ?? peer.displayName}
               </p>
               <p className="truncate text-xs text-ink-muted">
-                {peer.roomName ? `${peer.displayName} · ` : ""}@{peer.username}
+                {dmRoomName ? `${peer.displayName} · ` : ""}@{peer.username}
               </p>
             </div>
           </>
@@ -835,6 +846,7 @@ export function ChatRoom({
             peer={peer}
             onOpenMembers={() => setMembersOpen(true)}
             onOpenTempChat={() => setTempChatOpen(true)}
+            onOpenRename={() => setRenameOpen(true)}
           />
         </div>
       </header>
@@ -844,6 +856,14 @@ export function ChatRoom({
           targetDisplayName={peer.displayName}
           targetUsername={peer.username}
           onClose={() => setTempChatOpen(false)}
+        />
+      )}
+      {renameOpen && peer.kind === "dm" && (
+        <RenameTempChatModal
+          roomId={roomId}
+          currentName={dmRoomName}
+          onRenamed={setDmRoomName}
+          onClose={() => setRenameOpen(false)}
         />
       )}
       {membersOpen && peer.kind === "group" && (

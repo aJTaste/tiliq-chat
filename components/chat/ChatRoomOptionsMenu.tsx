@@ -17,6 +17,8 @@ import type { ChatPeer } from "./ChatRoom";
  * 経由せず、今開いているDM相手とその場で一時チャットを開始できるようにする導線。
  * onOpenTempChatでChatRoom.tsx側のCreateTempChatWithUserModalを開くだけで、
  * onOpenMembersと同じ「モーダルの実体は親が持つ」設計を踏襲する）。
+ * Phase 30: 一時チャット（DM）の場合のみ「チャット名を変更」エントリを表示する
+ * （onOpenRenameで同じく親のモーダルを開くだけ）。
  */
 export function ChatRoomOptionsMenu({
   roomId,
@@ -25,6 +27,7 @@ export function ChatRoomOptionsMenu({
   peer,
   onOpenMembers,
   onOpenTempChat,
+  onOpenRename,
 }: {
   roomId: string;
   initialAuthRequired: boolean;
@@ -32,6 +35,7 @@ export function ChatRoomOptionsMenu({
   peer: ChatPeer;
   onOpenMembers: () => void;
   onOpenTempChat: () => void;
+  onOpenRename: () => void;
 }) {
   const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -146,6 +150,18 @@ export function ChatRoomOptionsMenu({
               className="px-3 py-2 text-left text-ink transition-colors hover:bg-band/30"
             >
               一時チャットを作成
+            </button>
+          )}
+          {peer.kind === "dm" && isTemporary && (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenRename();
+                setOpen(false);
+              }}
+              className="px-3 py-2 text-left text-ink transition-colors hover:bg-band/30"
+            >
+              チャット名を変更
             </button>
           )}
           <button

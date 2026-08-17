@@ -241,6 +241,73 @@ export async function startTemporaryDirectMessage(
 }
 
 /**
+ * Phase 30: 一時チャットの作成後リネーム。バックログ「一時チャットの名前を作成後に
+ * リネームしたい」に対応（Phase 28で作成時の名前付けのみ実装していた）。
+ * 一時DM専用（グループには別のupdateGroupProfileがある）。room.nameはRLS判定条件に
+ * 使われない単純な列のため、updateGroupProfileと同じ理由で新規RPCは不要（既存の
+ * rooms_update_ownerポリシーが素のUPDATEをそのままカバーする）。
+ *
+ * オーナー（＝作成者）のみ変更可能。UIは簡略化のためDM両当事者に「チャット名を変更」
+ * メニューを表示し、実際の権限チェックはこのServer Action側の判定に委ねる
+ * （非オーナーが実行した場合はここでエラーメッセージを返す）。
+ */
+export async function renameTempChat(
+  roomId: string,
+  name: string,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "ログインが必要です。" };
+  }
+
+  const { data: room } = await supabase
+    .from("rooms")
+    .select("is_group, is_temporary")
+    .eq("id", roomId)
+    .maybeSingle();
+
+  if (!room || room.is_group || !room.is_temporary) {
+    return { success: false, error: "一時チャットが見つかりません。" };
+  }
+
+  const { data: myRow } = await supabase
+    .from("room_members")
+    .select("role")
+    .eq("room_id", roomId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (myRow?.role !== "owner") {
+    return {
+      success: false,
+      error: "このチャットの作成者のみ名前を変更できます。",
+    };
+  }
+
+  const normalizedName = name.trim();
+  if (normalizedName.length > TEMP_CHAT_NAME_MAX_LENGTH) {
+    return { success: false, error: "チャット名は50文字以内で入力してください。" };
+  }
+
+  const { error } = await supabase
+    .from("rooms")
+    .update({ name: normalizedName.length > 0 ? normalizedName : null })
+    .eq("id", roomId);
+
+  if (error) {
+    return { success: false, error: "チャット名の変更に失敗しました。" };
+  }
+
+  revalidatePath(`/chat/${roomId}`);
+  revalidatePath("/home");
+  return { success: true };
+}
+
+/**
  * ユーザーID（uuid）を直接指定してDMを開始する。
  * 検索結果・フレンド一覧など、既にuser_idが分かっているUIから呼び出す想定（Phase 5〜）。
  */
