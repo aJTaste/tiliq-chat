@@ -2144,18 +2144,44 @@ grant execute on function public.get_group_conversation_list() to authenticated;
 revoke execute on function public.get_group_conversation_list() from anon;
 
 -- =============================================================================
--- 実機QAで発見したDBバグ2件の修正（2026-08-17）
--- 適用済み（Supabase MCP: apply_migration "fix_search_users_duplicate_rows",
--- "fix_get_or_create_dm_room_exclude_temp_rooms"）。アプリコードの変更・
--- types/supabase.tsの再生成は不要（両関数ともシグネチャ不変）。
+-- 修正（Phase 31後・実機QA中に発見）: 同一相手との is_group=false ルーム複数存在に
+-- 起因する2件の不具合
+--
+-- 発見の経緯: Phase 26〜31の実機確認中、ユーザーID検索を行うとブラウザコンソールに
+-- React の "Encountered two children with the same key" 警告が出ることをユーザーが報告
+-- （components/home/AddUserPanel.tsx の key={r.userId} が衝突）。調査の結果、表示上の
+-- 警告ではなくDB側（RPC）のバグ2件が根本原因だった。
+--
+-- 共通の背景: Phase 6 で導入した一時チャットは create_temp_dm_room が常に新規ルームを
+-- 作る仕様（is_group=false / is_temporary=true）で、さらに Phase 25 で「同じ相手に何個でも
+-- 一時チャットを作れる」ようガードを撤廃した。その結果「同一ペアが is_group=false の
+-- ルームを複数持つ」のが通常の状態になったが、Phase 3・5 に作られた既存RPC 2本が
+-- 「1対1のDMルームは相手ごとに最大1つ」という旧前提のまま残っていた。
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 修正1: search_users が同一ユーザーを複数行返す
+-- 適用済み（Supabase MCP: apply_migration "fix_search_users_duplicate_rows"）。
+--
+-- 原因1（実際に発生していた）: existing_dm CTE が「相手1人につき1行」ではなく
+--   「相手との is_group=false ルーム1つにつき1行」を返しており、left join で行が増殖して
+--   いた。実データで確認したところ test1 ↔ test2 間に通常DM 1件＋一時チャット 1件が存在し、
+--   test1 での検索結果に test2 が2行返っていた。
+--   → distinct on (rm2.user_id) で1行に畳む。優先順位は「通常DM > 一時チャット、同種なら
+--     古い方」とし、existing_room_id が期限切れで消える一時チャットの部屋を指してしまう
+--     曖昧さも同時に解消する（get_or_create_dm_room の意味論に寄せた）。
+--
+-- 原因2（今回は未発生・予防的修正）: fs CTE も、同一ペアで双方向の friendships 行が
+--   存在しうる設計（Phase 5「再申請は逆方向なら新規行を作成する」）のため、将来同じ増殖が
+--   起きる。適用時点の実データでは双方向行は0件だった。
+--   → distinct on (counterpart_id) で1行に畳む。優先順位は accepted > pending > rejected、
+--     pending が両方向にある場合は received（自分が受け取った側＝承認/拒否UIを出せる方）を優先。
+--
+-- 戻り値の列構成は不変のため create or replace で適用可能（drop 不要）。したがって
+-- docs/lessons.md の「drop→create は旧ACLを引き継がない」問題は発生せず、既存の
+-- revoke（public/anon）・grant（authenticated）はそのまま維持される。
 -- -----------------------------------------------------------------------------
 
--- 1. fix_search_users_duplicate_rows
--- search_usersのexisting_dm CTEが、相手との is_group=false ルーム1件につき1行を
--- 返しており、同一相手と通常DM＋一時チャットが併存すると検索結果が重複していた
--- （AddUserPanel.tsxでReactのduplicate key警告）。distinct onで1行に畳み、
--- 一時チャットより通常DMを優先する優先順位を付けた。
--- fs CTE（双方向friendships）も同種の重複リスクがあったため予防的にdistinct on化。
 create or replace function public.search_users(p_query text)
 returns table (
   user_id uuid,
@@ -2232,10 +2258,34 @@ as $$
   limit 20
 $$;
 
--- 2. fix_get_or_create_dm_room_exclude_temp_rooms
--- 既存DM検索がis_temporaryを除外しておらず、通常DMを開始したつもりで一時チャットの
--- 部屋に入る可能性があった（期限切れでroomごと削除されるためデータ喪失に見える）。
--- is_temporary = false を追加し、order by created_atで決定的にした。
+-- -----------------------------------------------------------------------------
+-- 修正2: get_or_create_dm_room が既存DM検索で一時チャットを拾ってしまう
+-- 適用済み（Supabase MCP: apply_migration
+--   "fix_get_or_create_dm_room_exclude_temp_rooms"）。
+--
+-- 症状: 検索結果の「メッセージ」ボタン（startDirectMessageWithUser）から通常DMを開始した
+--   はずが、その相手との一時チャットの部屋に入ってしまうことがある。一時チャットは
+--   expires_at 到来時に cleanup バッチで room ごと削除されるため、「通常DMとして始めた
+--   会話が突然消える」というデータ喪失に見える形で現れる。
+--
+-- 原因: 既存DM検索の where 句が r.is_group = false のみで、r.is_temporary を除外して
+--   いなかった。Phase 6 で create_temp_dm_room が is_group=false / is_temporary=true の
+--   ルームを作るようになったが、この関数側の検索条件が追随していなかった。さらに
+--   order by 無しの limit 1 のため、通常DMと一時チャットが併存する場合にどちらが返るかが
+--   プラン依存で不定だった。
+--
+-- 修正: (1) and r.is_temporary = false を追加し通常DMのみを検索対象にする（一時チャットは
+--           create_temp_dm_room 専用で、この関数はマージしないという設計を条件式に反映）
+--       (2) order by r.created_at を追加し、同一ペアに通常DMが複数ある場合も常に最古の
+--           1件に決定する（呼び出しごとに違う部屋へ飛ぶのを防ぐ）
+--
+-- 引数・戻り値は不変のため create or replace で適用可能（既存ACLは維持される）。
+--
+-- 検証: rollback トランザクション内で test1 として呼び出し、返り値が is_temporary=false /
+--   expires_at=null / メッセージ135件の通常DMであること、および新規ルームが作られず既存
+--   DMが再利用されることを確認済み。
+-- -----------------------------------------------------------------------------
+
 create or replace function public.get_or_create_dm_room(p_other_user_id uuid)
 returns uuid
 language plpgsql
@@ -2309,4 +2359,13 @@ begin
 end;
 $$;
 
--- EXECUTE権限（create or replaceのため既存ACL・anon revokeは維持される。再実行不要）
+-- -----------------------------------------------------------------------------
+-- 残っている同種のリスク（未対応・バックログ項目）
+--
+-- get_conversation_list も left join fs on fs.counterpart_id = o.other_user_id という
+-- 同じパターンを持つため、同一ペアで双方向の friendships 行が生じた時点で会話一覧の行が
+-- 重複する（サイドバー側でも同じ React key 警告が出る）。適用時点の実データでは双方向行が
+-- 0件のため未発生だが、Phase 5 の設計上いずれ発生する。修正するなら本ファイル修正1の
+-- fs CTE（distinct on + 優先順位付け）をそのまま移植すればよい。
+-- get_group_conversation_list は fs を使っていないため影響なし。
+-- -----------------------------------------------------------------------------
