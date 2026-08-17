@@ -10,7 +10,7 @@ Phase 15（2026-08-12）の時点で「一旦完成・既知の問題なし」�
 - **サイドバー再設計の残タスク（Phase 23由来）：** サイドバー幅`md:w-80`の実機確認後の再調整（`GroupMembersPanel.tsx`のModal追従・`docs/srs.md` 3.2.1節の整合は対応済み）
 - **チャット切り替え時のさらなる体感速度改善：** ヘッダー・入力欄をSuspenseで据え置き、メッセージ一覧だけを遅延ストリーミングする案。`app/(shell)/chat/[roomId]/template.tsx`によるroomId切り替え時の強制リマウント設計（AuthGateのsessionStorage再チェック担保のため導入）との整合性を先に設計する必要がある
 - **自動テスト基盤の導入：** Phase 15で見送り・手動QA運用継続の方針を確定済み（`docs/srs.md` 3.9節にも明記）。この決定自体は蒸し返し不要だが、グループチャットUI実装で既存機能への影響範囲が広がったため、要否を再検討する候補として残す
-- **`get_conversation_list`の潜在的な重複リスク：** `search_users`・`get_or_create_dm_room`と同種の、双方向`friendships`行を前提としたJOIN（`fs`相当のCTE）を持つ。2026-08-17に修正した`search_users`/`get_or_create_dm_room`の不具合（下記運用メモ参照）と同じ原因パターンで、双方向の`friendships`行が生じた時点でサイドバー会話一覧が重複表示する可能性がある。現データでは0件で未発生のため優先度は低いが、同種の修正（`distinct on`等）を予防的に適用するかは要判断
+- **`get_conversation_list`の潜在的な重複リスク：** `search_users`・`get_or_create_dm_room`と同種の、双方向`friendships`行を前提としたJOIN（`fs`相当のCTE）を持つ。Phase 32で修正した`search_users`/`get_or_create_dm_room`の不具合と同じ原因パターンで、双方向の`friendships`行が生じた時点でサイドバー会話一覧が重複表示する可能性がある（詳細は[phase-32](docs/phases/phase-32-post-pause-docs-sync.md)）。現データでは0件で未発生のため優先度は低いが、同種の修正（`distinct on`等）を予防的に適用するかは要判断
 
 ## 実機フィードバックで見つかった小粒課題（優先度未確定・ユーザーと相談のうえ選ぶ）
 
@@ -28,12 +28,8 @@ Phase 15（2026-08-12）の時点で「一旦完成・既知の問題なし」�
 
 ## 運用メモ
 
-- **2アカウント運用（メイン/サブ）は2026-08-17付けで終了。** 運用していた期間は両アカウントが同じローカルリポジトリを操作するため、アカウント切り替え時は必ず`git pull`してから作業し、作業単位ごとに`commit`・`push`する、同時に両アカウントで並行編集しないというルールで運用していた（経緯はCLAUDE.md「アカウント運用（2026年8月〜8月17日、終了）」参照）
-- **2026-08-17：Claude（チャット側）とSupabase MCP経由での実機QAで発見・修正したDB側バグ2件：**
-  1. `fix_search_users_duplicate_rows` — `search_users`の`existing_dm` CTEが相手との`is_group=false`ルーム1件につき1行を返しており、同一相手と通常DM＋一時チャットが併存すると検索結果が重複していた（`AddUserPanel.tsx`でReactのduplicate key警告）。`distinct on`で1行に畳み、通常DM優先の優先順位を付けて修正。`fs` CTEの双方向`friendships`による同種の潜在リスクも予防的に修正
-  2. `fix_get_or_create_dm_room_exclude_temp_rooms` — 既存DM検索が`is_temporary`を除外しておらず、通常DMを開始したつもりで一時チャットの部屋に入る可能性があった（期限切れでroomごと削除されるためデータ喪失に見える）。`is_temporary = false`を追加、`order by created_at`で決定的にして修正
-
-  いずれもアプリコードの変更・`types/supabase.ts`の再生成は不要（シグネチャ不変）。**`docs/schema.sql`への追記は当初「完了済み」と報告されていたが、実際には未反映だった**（両migrationとも`list_migrations`上は適用済みで実DB側は正しいが、`docs/schema.sql`の`search_users`/`get_or_create_dm_room`定義は旧バージョンのままだった）。この2026-08-17のセッションで実DBの現行定義（`pg_get_functiondef`で取得）をもとに追記して解消済み。同種パターンの潜在リスクが`get_conversation_list`にも残る（上記「着手候補」参照）
+- **2アカウント運用（メイン/サブ）は2026-08-17付けで終了。** 経緯・運用ルールはCLAUDE.md「アカウント運用（2026年8月〜8月17日、終了）」参照
+- **Phase 32（2026-08-17）：** チャット側実機QAで見つかったDBバグ2件（`search_users`の検索結果重複・`get_or_create_dm_room`の一時チャット誤取得）を修正・`docs/schema.sql`へ反映。詳細・学び（「ドキュメント反映済みという報告も実ファイルで裏取りする」等）は[phase-32](docs/phases/phase-32-post-pause-docs-sync.md)参照
 - **Claude Code利用の中断（2026-08-17〜）：** メインアカウントのPro契約が2026-08-17で一旦終了し、再開時期は未定（数週間〜数ヶ月の見込みだが確定していない）。この中断直前の最終セッションで、Phase 26〜30（プロフィール編集・スクロールバー・一時チャット命名・既読機能・一時チャットリネーム）のコードレベル・DBレベル検証（`tsc`/`eslint`/`next build`・rollbackトランザクションでのRLS/RPC境界確認・`get_advisors`）を実施し、「不具合は見つからなかった」と結論していたが、**これは誤りだった**（下記2026-08-17追記参照）。あわせてサイドバー一覧への既読反映（Phase 31）も実装済み
 - **2026-08-17追記（既読機能バグの発見・修正）：** ユーザーからの実機フィードバックで「既読が一切付かない」と報告があり調査した結果、`components/chat/ChatRoom.tsx`の`mark_room_read` RPC呼び出しが`void supabase.rpc(...)`という書き方のため`.then()`が一度も呼ばれず、**実際にはHTTPリクエストが一切発火していなかった**（postgrest-jsのビルダーは`.then()`/`await`で初めてfetchが発火する遅延実行の仕組み。詳細は`docs/lessons.md`「Supabase JSクライアント（postgrest-js）の『fire-and-forget』の罠」）。上記の「不具合は見つからなかった」はDBレベル（rollbackトランザクションでのRLS/RPC直接実行）の検証だけでは検出できない種類の不具合だったための誤り。修正（`.then(() => {})`を明示的に追加）はPlaywrightで実際にアカウント作成→DM開始→既読確認までの一連をブラウザ操作で再現し、修正前は再現・修正後は解消することを確認済み（チャット画面内・サイドバー一覧の両方）。既読機能（Phase 29）・サイドバー既読反映（Phase 31）はこの修正によって初めて実際に動作する状態になった
 - **UIを実際に操作しての実機確認（Phase 26〜31）：** 既読機能（Phase 29・31）は上記の自動ブラウザ検証で動作確認済みだが、それ以外（プロフィール編集・スクロールバー・一時チャット命名・一時チャットリネーム＝Phase 26・27・28・30）はまだユーザーによる実機確認が済んでいない。次回はこの4Phase分の「動作確認してほしい項目」（`docs/phases/phase-26-profile-editing.md` `phase-27-scrollbar-styling.md` `phase-28-temp-chat-naming.md` `phase-30-temp-chat-rename.md`）から着手するのが自然

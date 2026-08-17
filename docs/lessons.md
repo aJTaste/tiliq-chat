@@ -84,3 +84,9 @@ Phase横断で繰り返し関係してくる技術的な落とし穴・確定し
 - **eslint 10系：** `eslint-plugin-react`がESLint 10のRuleContext API変更に未対応（`peerDependencies.eslint`が`^9.7`まで）。対応PR（[jsx-eslint/eslint-plugin-react#4022](https://github.com/jsx-eslint/eslint-plugin-react/pull/4022)）はレビュー・検証済みでメンテナの最終マージ待ち。次回確認：`npm view eslint-plugin-react@latest version`（7.37.5から変わっていないか）
 - 状況を確認したら、変化の有無に関わらずこのファイルの該当箇所を更新すること（結果を`docs/phases/`に新規Phaseとして記録するかは、実際にコード変更が発生したかどうかで判断する）
 - **2026-08-17再確認：** 両ブロッカーとも変化なし（`typescript-eslint`の`peerDependencies.typescript`は引き続き`<6.1.0`、`eslint-plugin-react@latest`は引き続き7.37.5・`peerDependencies.eslint`は`^9.7`まで）。Claude Code利用中断前の最終チェックのため次回確認時期は未定
+
+## ドキュメント同期（`docs/schema.sql`等の参照用ファイル）
+
+- **「〇〇への反映は完了している」という伝聞（他セッション・ユーザー経由の報告を含む）も、そのファイルを実際に読むまでは事実として扱わない。** Phase 32で、チャット側セッションが実施したDB修正について「`docs/schema.sql`への追記は完了している」と伝えられたが、実際に`grep`すると反映されていなかった（DB本体は`list_migrations`で正しく適用済みと確認できたが、その結果をこのリポジトリのdocsファイルへ書き写す作業自体が行われていなかった）。**「操作対象そのもの（DB）は正しく直っている」ことと「その操作の記録が別の場所（リポジトリのdocs）に反映されている」ことは別の確認軸**であり、後者は前者から自動的には導けない
+- `docs/schema.sql`はSupabase側（実マイグレーション・実テーブル定義）を書き写した参照用ファイルであり、それ自体が正ではない（CLAUDE.md冒頭に明記）。DB変更が絡むセッションの終わりには`list_migrations`（またはSupabase MCPでの現行定義取得）と`docs/schema.sql`の記述が一致しているか照合する一手間が有効
+- SQL本体はそのままにコメントだけを差し替えるような依頼では、`diff`でコメント行（`^--`）を除いた本体が完全一致することを機械的に確認してから置き換えると、「本体は変えていない」という前提を目視確認だけに頼らず担保できる
