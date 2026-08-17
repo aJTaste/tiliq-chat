@@ -357,6 +357,7 @@ export type Database = {
           is_temporary: boolean
           last_message_at: string
           last_message_preview: string
+          last_message_read: boolean
           other_avatar_url: string
           other_display_name: string
           other_user_id: string
@@ -385,6 +386,7 @@ export type Database = {
           avatar_url: string
           last_message_at: string
           last_message_preview: string
+          last_message_read_count: number
           member_count: number
           member_names: string[]
           name: string

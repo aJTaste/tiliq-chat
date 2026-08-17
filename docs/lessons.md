@@ -78,3 +78,4 @@ Phase横断で繰り返し関係してくる技術的な落とし穴・確定し
 - **typescript 7系：** `typescript-eslint`の`peerDependencies.typescript`が`<6.1.0`に固定されている（TypeScript 7.0がProgrammatic Compiler APIを未提供のため）。TypeScript 7.1（`typescript-eslint`対応の前提）自体が未リリース。次回確認：`npm view typescript-eslint peerDependencies`
 - **eslint 10系：** `eslint-plugin-react`がESLint 10のRuleContext API変更に未対応（`peerDependencies.eslint`が`^9.7`まで）。対応PR（[jsx-eslint/eslint-plugin-react#4022](https://github.com/jsx-eslint/eslint-plugin-react/pull/4022)）はレビュー・検証済みでメンテナの最終マージ待ち。次回確認：`npm view eslint-plugin-react@latest version`（7.37.5から変わっていないか）
 - 状況を確認したら、変化の有無に関わらずこのファイルの該当箇所を更新すること（結果を`docs/phases/`に新規Phaseとして記録するかは、実際にコード変更が発生したかどうかで判断する）
+- **2026-08-17再確認：** 両ブロッカーとも変化なし（`typescript-eslint`の`peerDependencies.typescript`は引き続き`<6.1.0`、`eslint-plugin-react@latest`は引き続き7.37.5・`peerDependencies.eslint`は`^9.7`まで）。Claude Code利用中断前の最終チェックのため次回確認時期は未定

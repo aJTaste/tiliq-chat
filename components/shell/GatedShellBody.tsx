@@ -103,6 +103,7 @@ export function GatedShellBody({
         isTemporary: row.is_temporary ?? false,
         expiresAt: row.expires_at ?? null,
         roomName: row.room_name ?? null,
+        lastMessageRead: row.last_message_read ?? false,
       }));
 
       const groupConversations: ConversationItem[] = (
@@ -116,6 +117,7 @@ export function GatedShellBody({
         memberCount: row.member_count,
         lastMessagePreview: row.last_message_preview ?? null,
         lastMessageAt: row.last_message_at ?? null,
+        lastMessageReadCount: row.last_message_read_count ?? null,
       }));
 
       const friendRequests: FriendRequestItem[] = (

@@ -32,6 +32,10 @@ export type ConversationItem =
       expiresAt: string | null;
       // Phase 28: 一時チャットの名前付け。設定時はotherDisplayNameより優先して表示する。
       roomName: string | null;
+      // Phase 31: サイドバー一覧への既読状態反映。ChatRoom.tsxのreadBadgeと同じ
+      // 「自分が送った直近メッセージが読まれたか」の意味。自分が最後の送信者でない、
+      // またはまだ未読なら false（バッジ非表示）。
+      lastMessageRead: boolean;
     }
   | {
       kind: "group";
@@ -42,6 +46,9 @@ export type ConversationItem =
       memberCount: number;
       lastMessagePreview: string | null;
       lastMessageAt: string | null;
+      // Phase 31: 自分が送った直近メッセージを読んだメンバー数。read_receipts_enabled
+      // がオフ、または直近メッセージが自分の送信でない場合はnull（バッジ非表示）。
+      lastMessageReadCount: number | null;
     };
 
 function isDmConversation(
@@ -155,8 +162,11 @@ function ConversationRow({
             {item.lastMessagePreview ?? "まだメッセージがありません"}
           </p>
         </div>
-        <span className="shrink-0 text-[10px] text-ink-muted">
+        <span className="flex shrink-0 flex-col items-end gap-0.5 text-[10px] text-ink-muted">
           {formatRelativeTime(item.lastMessageAt)}
+          {/* Phase 31: チャット画面内の既読バッジ（MessageBubble.tsx）と同じ文言・
+              同じ条件（自分が送った直近メッセージが読まれた場合のみ）を一覧にも表示する。 */}
+          {item.lastMessageRead && <span className="text-tongue">既読</span>}
         </span>
       </Link>
       {item.friendshipStatus === "accepted" && (
@@ -248,8 +258,15 @@ function GroupConversationRow({ item }: { item: ConversationItem & { kind: "grou
           {item.lastMessagePreview ?? "まだメッセージがありません"}
         </p>
       </div>
-      <span className="shrink-0 text-[10px] text-ink-muted">
+      <span className="flex shrink-0 flex-col items-end gap-0.5 text-[10px] text-ink-muted">
         {formatRelativeTime(item.lastMessageAt)}
+        {/* Phase 31: グループはChatRoom.tsxと同じ「既読N」件数表示（既読者の名前列挙は
+            人数が多いと煩雑になるため、既存のチャット画面内既読バッジと同様に件数のみ）。
+            ChatRoom.tsxのreadBadgeと同じく、既読0件（誰もまだ読んでいない）の間は
+            バッジ自体を出さない（「既読0」表示は情報として不要なノイズのため）。 */}
+        {item.lastMessageReadCount !== null && item.lastMessageReadCount > 0 && (
+          <span className="text-tongue">既読{item.lastMessageReadCount}</span>
+        )}
       </span>
     </Link>
   );

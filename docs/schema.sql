@@ -1964,3 +1964,181 @@ alter publication supabase_realtime add table public.room_members;
 -- read_receipts_enabled/name/avatar_urlの更新は、既存rooms_update_ownerポリシー
 -- （is_room_owner(id)。どのRLS判定条件にも使われない単純な列のため新規RPC不要）が
 -- 引き続きカバーする。app/actions/rooms.tsのupdateGroupReadReceiptsEnabled参照。
+
+-- =============================================================================
+-- Phase 31: サイドバー会話一覧への既読状態反映
+-- 適用済み（Supabase MCP: apply_migration "phase31_sidebar_read_receipts"）。
+-- ChatRoom.tsxのreadBadge計算（自分が送った直近メッセージが読まれたか）と同じ
+-- ロジックを、get_conversation_list/get_group_conversation_listの戻り値に追加する。
+-- 列構成変更のためdrop→create（anon revokeのやり直しを含む）。適用前にrollback付き
+-- トランザクションで、未読/既読切り替え・グループの人数カウント・
+-- read_receipts_enabled=false時のNULL化を検証済み。
+-- -----------------------------------------------------------------------------
+
+drop function public.get_conversation_list();
+
+create function public.get_conversation_list()
+returns table (
+  room_id uuid,
+  other_user_id uuid,
+  other_username text,
+  other_display_name text,
+  other_avatar_url text,
+  friendship_status text,
+  last_message_preview text,
+  last_message_at timestamptz,
+  is_temporary boolean,
+  expires_at timestamptz,
+  room_name text,
+  last_message_read boolean
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  with my_rooms as (
+    select rm.room_id, r.is_temporary, r.expires_at, r.name as room_name
+    from public.room_members rm
+    join public.rooms r on r.id = rm.room_id
+    where rm.user_id = auth.uid() and r.is_group = false
+  ),
+  other as (
+    select rm.room_id, rm.user_id as other_user_id, rm.last_read_at as other_last_read_at
+    from public.room_members rm
+    where rm.room_id in (select room_id from my_rooms)
+      and rm.user_id <> auth.uid()
+  ),
+  last_msg as (
+    select distinct on (m.room_id)
+      m.room_id, m.sender_id, m.content, m.image_url, m.created_at
+    from public.messages m
+    where m.room_id in (select room_id from my_rooms)
+      and m.deleted_at is null
+    order by m.room_id, m.created_at desc
+  ),
+  fs as (
+    select
+      case when f.requester_id = auth.uid() then f.addressee_id else f.requester_id end as counterpart_id,
+      f.status,
+      f.requester_id
+    from public.friendships f
+    where f.requester_id = auth.uid() or f.addressee_id = auth.uid()
+  )
+  select
+    o.room_id,
+    o.other_user_id,
+    p.username,
+    p.display_name,
+    p.avatar_url,
+    coalesce(
+      case
+        when fs.status = 'accepted' then 'accepted'
+        when fs.status = 'pending' and fs.requester_id = auth.uid() then 'pending_sent'
+        when fs.status = 'pending' then 'pending_received'
+        when fs.status = 'rejected' then 'rejected'
+      end,
+      'none'
+    ) as friendship_status,
+    coalesce(lm.content, case when lm.image_url is not null then '📷 画像' else null end) as last_message_preview,
+    lm.created_at as last_message_at,
+    mr.is_temporary,
+    mr.expires_at,
+    mr.room_name,
+    coalesce(
+      lm.sender_id = auth.uid()
+        and o.other_last_read_at is not null
+        and o.other_last_read_at >= lm.created_at,
+      false
+    ) as last_message_read
+  from other o
+  join public.profiles p on p.id = o.other_user_id
+  join my_rooms mr on mr.room_id = o.room_id
+  left join last_msg lm on lm.room_id = o.room_id
+  left join fs on fs.counterpart_id = o.other_user_id
+  where not public.is_blocked(auth.uid(), o.other_user_id)
+  order by lm.created_at desc nulls last
+$$;
+
+revoke execute on function public.get_conversation_list() from public;
+revoke execute on function public.get_conversation_list() from anon;
+grant execute on function public.get_conversation_list() to authenticated;
+
+drop function public.get_group_conversation_list();
+
+create function public.get_group_conversation_list()
+returns table (
+  room_id uuid,
+  name text,
+  avatar_url text,
+  member_count integer,
+  member_names text[],
+  last_message_preview text,
+  last_message_at timestamptz,
+  last_message_read_count integer
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  with my_rooms as (
+    select rm.room_id
+    from public.room_members rm
+    join public.rooms r on r.id = rm.room_id
+    where rm.user_id = auth.uid() and r.is_group = true
+  ),
+  member_counts as (
+    select rm.room_id, count(*) as member_count
+    from public.room_members rm
+    where rm.room_id in (select room_id from my_rooms)
+    group by rm.room_id
+  ),
+  member_names as (
+    select rm.room_id, array_agg(p.display_name order by rm.joined_at) as names
+    from public.room_members rm
+    join public.profiles p on p.id = rm.user_id
+    where rm.room_id in (select room_id from my_rooms)
+      and rm.user_id <> auth.uid()
+    group by rm.room_id
+  ),
+  last_msg as (
+    select distinct on (m.room_id) m.room_id, m.sender_id, m.content, m.image_url, m.created_at
+    from public.messages m
+    where m.room_id in (select room_id from my_rooms) and m.deleted_at is null
+    order by m.room_id, m.created_at desc
+  ),
+  read_counts as (
+    select lm.room_id, count(*) as read_count
+    from last_msg lm
+    join public.room_members rm on rm.room_id = lm.room_id and rm.user_id <> lm.sender_id
+    where lm.sender_id = auth.uid()
+      and rm.last_read_at is not null
+      and rm.last_read_at >= lm.created_at
+    group by lm.room_id
+  )
+  select
+    mr.room_id,
+    ro.name,
+    ro.avatar_url,
+    mc.member_count,
+    coalesce(mn.names, array[]::text[]) as member_names,
+    coalesce(lm.content, case when lm.image_url is not null then '📷 画像' else null end) as last_message_preview,
+    lm.created_at as last_message_at,
+    case
+      when ro.read_receipts_enabled and lm.sender_id = auth.uid()
+        then coalesce(rc.read_count, 0)
+      else null
+    end as last_message_read_count
+  from my_rooms mr
+  join public.rooms ro on ro.id = mr.room_id
+  join member_counts mc on mc.room_id = mr.room_id
+  left join member_names mn on mn.room_id = mr.room_id
+  left join last_msg lm on lm.room_id = mr.room_id
+  left join read_counts rc on rc.room_id = mr.room_id
+  order by lm.created_at desc nulls last
+$$;
+
+revoke execute on function public.get_group_conversation_list() from public;
+grant execute on function public.get_group_conversation_list() to authenticated;
+revoke execute on function public.get_group_conversation_list() from anon;
