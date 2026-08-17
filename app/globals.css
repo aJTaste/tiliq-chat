@@ -67,3 +67,38 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * スクロールバーの見た目調整（Phase 27）
+ * ------------------------------------------------------------------
+ * ブラウザデフォルトのスクロールバーはブランドトーン（落ち着いた帯模様の
+ * ニュートラル基調）から浮いて見える、特にチャットのメッセージ一覧のように
+ * 縦に長く常時表示される箇所で目立つ、という実機フィードバックへの対応。
+ * tongueブルーは「CTA・リンク・強調に限定使用」というデザイン原則（CLAUDE.md）
+ * のため、スクロールバー自体には使わずbandベースの控えめな見た目にする。
+ * 全称セレクタで一括適用し、チャット/サイドバー/モーダル等の個別対応は不要にする。
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--band) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--band);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ink-muted);
+}
